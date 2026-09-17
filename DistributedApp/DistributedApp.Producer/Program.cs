@@ -1,8 +1,5 @@
-﻿using System.Net.Sockets;
+﻿using DistributedApp.Producer;
 
-// Se conectează la Broker pe portul 5000
-TcpClient client = new TcpClient();
+var producer = new Producer();
 
-await client.ConnectAsync("127.0.0.1", 5000);
-
-Console.WriteLine("Producer conectat la Broker.");
+producer.Start();
