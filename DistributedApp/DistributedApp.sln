@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Producer", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Consumer", "DistributedApp.Consumer\DistributedApp.Consumer.csproj", "{839B6A55-618A-46B1-B14F-57EC56703366}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Contracts.Tests", "DistributedApp.Contracts.Tests\DistributedApp.Contracts.Tests.csproj", "{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +32,9 @@ Global
 		{839B6A55-618A-46B1-B14F-57EC56703366}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{839B6A55-618A-46B1-B14F-57EC56703366}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{839B6A55-618A-46B1-B14F-57EC56703366}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
