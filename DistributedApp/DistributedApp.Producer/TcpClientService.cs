@@ -1,32 +1,50 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Text;
+using DistributedApp.Contracts;
 
 namespace DistributedApp.Producer;
 
-public class TcpClientService
+public sealed class TcpClientService
 {
     private const string BrokerHost = "127.0.0.1";
     private const int BrokerPort = 5000;
 
-    public void Send(string message)
+    public async Task<Message> SendAsync(
+        Message message,
+        CancellationToken cancellationToken = default)
     {
-        try
+        using TcpClient client = new();
+        await client.ConnectAsync(
+            BrokerHost,
+            BrokerPort,
+            cancellationToken);
+
+        await using NetworkStream stream = client.GetStream();
+        using StreamReader reader = new(
+            stream,
+            Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: false,
+            leaveOpen: true);
+        await using StreamWriter writer = new(
+            stream,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            leaveOpen: true)
         {
-            using TcpClient client = new TcpClient();
+            AutoFlush = true,
+            NewLine = "\n"
+        };
 
-            client.Connect(BrokerHost, BrokerPort);
+        await writer.WriteLineAsync(
+            MessageJson.Serialize(message).AsMemory(),
+            cancellationToken);
 
-            using NetworkStream stream = client.GetStream();
-
-            byte[] data = Encoding.UTF8.GetBytes(message);
-
-            stream.Write(data, 0, data.Length);
-
-            Console.WriteLine("Mesaj transmis prin TCP.");
-        }
-        catch (Exception ex)
+        string? responseLine = await reader.ReadLineAsync(cancellationToken);
+        if (responseLine is null)
         {
-            Console.WriteLine($"Eroare: {ex.Message}");
+            throw new IOException(
+                "Brokerul a închis conexiunea fără un răspuns.");
         }
+
+        return MessageJson.Deserialize(responseLine);
     }
 }
