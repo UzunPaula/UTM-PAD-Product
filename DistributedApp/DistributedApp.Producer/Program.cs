@@ -1,5 +1,4 @@
-﻿using DistributedApp.Producer;
+using DistributedApp.Producer;
 
-var producer = new Producer();
-
-producer.Start();
+Producer producer = new();
+await producer.StartAsync();
