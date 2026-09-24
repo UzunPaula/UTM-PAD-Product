@@ -1,20 +1,36 @@
-﻿using DistributedApp.Contracts;
+using DistributedApp.Broker;
 
-using System.Net;
-using System.Net.Sockets;
+string settingsPath = Path.Combine(
+    AppContext.BaseDirectory,
+    "broker.settings.json");
 
-// Brokerul ascultă conexiuni TCP pe portul 5000
-TcpListener server = new TcpListener(IPAddress.Any, 5000);
+using CancellationTokenSource cancellation = new();
 
-server.Start();
-
-Console.WriteLine("Broker pornit pe portul 5000.");
-Console.WriteLine("Astept conexiuni...");
-
-while (true)
+Console.CancelKeyPress += (_, eventArgs) =>
 {
-    // Așteaptă conectarea unui Producer sau Consumer
-    TcpClient client = await server.AcceptTcpClientAsync();
+    eventArgs.Cancel = true;
+    cancellation.Cancel();
+};
 
-    Console.WriteLine("Un client s-a conectat.");
+try
+{
+    BrokerSettings settings = BrokerSettings.Load(settingsPath);
+    PersistentBrokerStore store = new(settings.StateFilePath);
+    BrokerServer server = new(settings, store);
+
+    await server.RunAsync(cancellation.Token);
+    return 0;
+}
+catch (OperationCanceledException)
+{
+    return 0;
+}
+catch (Exception exception)
+{
+    BrokerLog.Write(
+        "Error",
+        "broker_stopped",
+        "failure",
+        detail: exception.Message);
+    return 1;
 }

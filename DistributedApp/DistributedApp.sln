@@ -8,6 +8,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Producer", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Consumer", "DistributedApp.Consumer\DistributedApp.Consumer.csproj", "{839B6A55-618A-46B1-B14F-57EC56703366}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Contracts.Tests", "DistributedApp.Contracts.Tests\DistributedApp.Contracts.Tests.csproj", "{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Consumer.Tests", "DistributedApp.Consumer.Tests\DistributedApp.Consumer.Tests.csproj", "{E70A8AD9-36DF-4BE9-84B1-8E6902C6A42D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DistributedApp.Broker.Tests", "DistributedApp.Broker.Tests\DistributedApp.Broker.Tests.csproj", "{2CA26230-8682-4ECA-8619-D9C229C62BC9}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +36,17 @@ Global
 		{839B6A55-618A-46B1-B14F-57EC56703366}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{839B6A55-618A-46B1-B14F-57EC56703366}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{839B6A55-618A-46B1-B14F-57EC56703366}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8A8150D-BC04-4CA2-9C68-E8761EA4367A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E70A8AD9-36DF-4BE9-84B1-8E6902C6A42D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E70A8AD9-36DF-4BE9-84B1-8E6902C6A42D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E70A8AD9-36DF-4BE9-84B1-8E6902C6A42D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E70A8AD9-36DF-4BE9-84B1-8E6902C6A42D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2CA26230-8682-4ECA-8619-D9C229C62BC9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2CA26230-8682-4ECA-8619-D9C229C62BC9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2CA26230-8682-4ECA-8619-D9C229C62BC9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2CA26230-8682-4ECA-8619-D9C229C62BC9}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
