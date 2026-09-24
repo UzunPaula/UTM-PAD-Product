@@ -6,18 +6,35 @@ namespace DistributedApp.Producer;
 
 public sealed class TcpClientService
 {
-    private const string BrokerHost = "127.0.0.1";
-    private const int BrokerPort = 5000;
+    private readonly ProducerSettings _settings;
+
+    public TcpClientService(ProducerSettings settings)
+    {
+        _settings = settings;
+    }
 
     public async Task<Message> SendAsync(
         Message message,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource timeout =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_settings.RequestTimeoutMilliseconds);
+
         using TcpClient client = new();
-        await client.ConnectAsync(
-            BrokerHost,
-            BrokerPort,
-            cancellationToken);
+        try
+        {
+            await client.ConnectAsync(
+                _settings.BrokerHost,
+                _settings.BrokerPort,
+                timeout.Token);
+        }
+        catch (OperationCanceledException)
+            when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                "Conectarea la Broker a depășit timpul permis.");
+        }
 
         await using NetworkStream stream = client.GetStream();
         using StreamReader reader = new(
@@ -36,9 +53,20 @@ public sealed class TcpClientService
 
         await writer.WriteLineAsync(
             MessageJson.Serialize(message).AsMemory(),
-            cancellationToken);
+            timeout.Token);
 
-        string? responseLine = await reader.ReadLineAsync(cancellationToken);
+        string? responseLine;
+        try
+        {
+            responseLine = await reader.ReadLineAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+            when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                "Brokerul nu a răspuns în timpul permis.");
+        }
+
         if (responseLine is null)
         {
             throw new IOException(
@@ -46,5 +74,28 @@ public sealed class TcpClientService
         }
 
         return MessageJson.Deserialize(responseLine);
+    }
+
+    public async Task<bool> CanConnectAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using CancellationTokenSource timeout =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_settings.RequestTimeoutMilliseconds);
+
+        try
+        {
+            using TcpClient client = new();
+            await client.ConnectAsync(
+                _settings.BrokerHost,
+                _settings.BrokerPort,
+                timeout.Token);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is SocketException or OperationCanceledException)
+        {
+            return false;
+        }
     }
 }
