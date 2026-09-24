@@ -1,10 +1,13 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using DistributedApp.Contracts;
 
 namespace DistributedApp.Consumer;
 
-public class MessageProcessor
+public sealed class MessageProcessor
 {
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web);
+
     private readonly ProcessedMessageStore _processedMessageStore;
 
     public MessageProcessor(ProcessedMessageStore processedMessageStore)
@@ -12,52 +15,73 @@ public class MessageProcessor
         _processedMessageStore = processedMessageStore;
     }
 
-    public async Task<bool> ProcessAsync(Message message)
+    public async Task<ProcessingResult> ProcessAsync(
+        Message message,
+        CancellationToken cancellationToken = default)
     {
-        // Verificăm dacă mesajul a fost deja procesat
         if (_processedMessageStore.IsProcessed(message.MessageId))
         {
-            Console.WriteLine(
-                $"Duplicate message {message.MessageId}. Processing skipped.");
-
-            return true;
+            return ProcessingResult.Duplicate();
         }
 
         try
         {
-            Console.WriteLine($"Processing message: {message.MessageId}");
-            Console.WriteLine($"Correlation ID: {message.CorrelationId}");
-            Console.WriteLine($"Topic: {message.Topic}");
-
-            // Transformăm Payload-ul JSON într-un OrderPayload
-            var order = JsonSerializer.Deserialize<OrderPayload>(message.Payload);
+            OrderPayload? order =
+                JsonSerializer.Deserialize<OrderPayload>(
+                    message.Payload,
+                    JsonOptions);
 
             if (order == null)
             {
-                Console.WriteLine("Invalid order payload.");
-                return false;
+                return ProcessingResult.Failed(
+                    "The order payload cannot be null.");
             }
 
-            Console.WriteLine($"Order ID: {order.OrderId}");
-            Console.WriteLine($"Product: {order.Product}");
-            Console.WriteLine($"Quantity: {order.Quantity}");
+            string? validationError = Validate(order);
 
-            // Mesajul se marchează ca procesat numai după succes
-            await _processedMessageStore.MarkAsProcessedAsync(message.MessageId);
+            if (validationError != null)
+            {
+                return ProcessingResult.Failed(validationError);
+            }
 
-            Console.WriteLine("Message processed successfully.");
+            bool saved = await _processedMessageStore.TrySaveAsync(
+                message.MessageId,
+                order,
+                cancellationToken);
 
-            return true;
+            return saved
+                ? ProcessingResult.Processed()
+                : ProcessingResult.Duplicate();
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            Console.WriteLine($"Invalid JSON payload: {ex.Message}");
-            return false;
+            return ProcessingResult.Failed(
+                "The order payload is not valid JSON.");
         }
-        catch (Exception ex)
+        catch (IOException exception)
         {
-            Console.WriteLine($"Processing failed: {ex.Message}");
-            return false;
+            return ProcessingResult.Failed(
+                $"The local effect could not be saved: {exception.Message}");
         }
+    }
+
+    private static string? Validate(OrderPayload order)
+    {
+        if (string.IsNullOrWhiteSpace(order.OrderId))
+        {
+            return "OrderId is required.";
+        }
+
+        if (string.IsNullOrWhiteSpace(order.Product))
+        {
+            return "Product is required.";
+        }
+
+        if (order.Quantity <= 0)
+        {
+            return "Quantity must be greater than zero.";
+        }
+
+        return null;
     }
 }

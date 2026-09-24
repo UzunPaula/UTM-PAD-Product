@@ -1,64 +1,114 @@
-﻿using System.Text.Json;
+using System.Text.Json;
+using DistributedApp.Contracts;
 
 namespace DistributedApp.Consumer;
 
-public class ProcessedMessageStore
+public sealed class ProcessedMessageStore
 {
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true
+        };
+
     private readonly string _filePath;
-    private readonly HashSet<Guid> _processedIds;
+    private readonly Dictionary<Guid, OrderPayload> _processedOrders;
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public ProcessedMessageStore(string filePath)
     {
-        _filePath = filePath;
-        _processedIds = LoadProcessedIds();
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        _filePath = Path.GetFullPath(filePath);
+        _processedOrders = Load();
     }
+
+    public int Count => _processedOrders.Count;
 
     public bool IsProcessed(Guid messageId)
     {
-        return _processedIds.Contains(messageId);
+        return _processedOrders.ContainsKey(messageId);
     }
 
-    public async Task MarkAsProcessedAsync(Guid messageId)
+    public async Task<bool> TrySaveAsync(
+        Guid messageId,
+        OrderPayload order,
+        CancellationToken cancellationToken = default)
     {
-        if (!_processedIds.Add(messageId))
-        {
-            return;
-        }
+        await _writeLock.WaitAsync(cancellationToken);
 
-        await SaveAsync();
+        try
+        {
+            if (_processedOrders.ContainsKey(messageId))
+            {
+                return false;
+            }
+
+            // The business effect and deduplication key share one durable
+            // record, so a restart cannot observe one without the other.
+            _processedOrders.Add(messageId, order);
+
+            try
+            {
+                await SaveAsync(cancellationToken);
+                return true;
+            }
+            catch
+            {
+                _processedOrders.Remove(messageId);
+                throw;
+            }
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
-    private HashSet<Guid> LoadProcessedIds()
+    private Dictionary<Guid, OrderPayload> Load()
     {
         if (!File.Exists(_filePath))
         {
-            return new HashSet<Guid>();
+            return new Dictionary<Guid, OrderPayload>();
         }
 
         try
         {
             string json = File.ReadAllText(_filePath);
 
-            return JsonSerializer.Deserialize<HashSet<Guid>>(json)
-                   ?? new HashSet<Guid>();
+            return JsonSerializer.Deserialize<Dictionary<Guid, OrderPayload>>(
+                       json,
+                       JsonOptions)
+                   ?? throw new InvalidDataException(
+                       "The consumer state file cannot contain null.");
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
-            Console.WriteLine("Warning: processed IDs file is invalid.");
-
-            return new HashSet<Guid>();
+            throw new InvalidDataException(
+                "The consumer state file contains invalid JSON.",
+                exception);
         }
     }
 
-    private async Task SaveAsync()
+    private async Task SaveAsync(CancellationToken cancellationToken)
     {
-        string json = JsonSerializer.Serialize(
-            _processedIds,
-            new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
+        string? directory = Path.GetDirectoryName(_filePath);
 
-        await File.WriteAllTextAsync(_filePath, json);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        // Write a complete temporary file first, then replace the state file.
+        // A partial write must never become valid deduplication state.
+        string temporaryPath = _filePath + ".tmp";
+        string json = JsonSerializer.Serialize(_processedOrders, JsonOptions);
+
+        await File.WriteAllTextAsync(
+            temporaryPath,
+            json,
+            cancellationToken);
+
+        File.Move(temporaryPath, _filePath, overwrite: true);
     }
 }

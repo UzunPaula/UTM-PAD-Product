@@ -1,19 +1,53 @@
-﻿using DistributedApp.Consumer;
+using DistributedApp.Consumer;
 
-var consumer = new ConsumerClient("127.0.0.1", 5000);
+string settingsPath = Path.Combine(
+    AppContext.BaseDirectory,
+    "consumer.settings.json");
+
+using CancellationTokenSource cancellation = new();
+
+Console.CancelKeyPress += (_, eventArgs) =>
+{
+    eventArgs.Cancel = true;
+    cancellation.Cancel();
+};
 
 try
 {
-    await consumer.ConnectAsync();
+    ConsumerSettings settings = ConsumerSettings.Load(settingsPath);
+    ProcessedMessageStore store =
+        new(settings.StateFilePath);
+    MessageProcessor processor = new(store);
+    ConsumerMessageHandler handler = new(
+        processor,
+        settings.SimulateCrashBeforeAcknowledgement);
+    ConsumerClient consumer = new(
+        settings.BrokerHost,
+        settings.BrokerPort,
+        handler);
 
-    await consumer.SubscribeAsync("orders");
-
-    Console.WriteLine("Consumer is running.");
-    Console.WriteLine("Press Enter to stop.");
-
-    Console.ReadLine();
+    await consumer.RunAsync(settings.Topic, cancellation.Token);
+    return 0;
 }
-catch (Exception ex)
+catch (OperationCanceledException)
 {
-    Console.WriteLine($"Consumer error: {ex.Message}");
+    return 0;
+}
+catch (SimulatedConsumerCrashException exception)
+{
+    ConsumerLog.Write(
+        "Critical",
+        "consumer_stopped",
+        "simulated_crash",
+        detail: exception.Message);
+    return 2;
+}
+catch (Exception exception)
+{
+    ConsumerLog.Write(
+        "Error",
+        "consumer_stopped",
+        "failure",
+        detail: exception.Message);
+    return 1;
 }
