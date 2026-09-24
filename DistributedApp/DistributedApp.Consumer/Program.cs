@@ -20,7 +20,9 @@ try
     MessageProcessor processor = new(store);
     ConsumerMessageHandler handler = new(
         processor,
-        settings.SimulateCrashBeforeAcknowledgement);
+        settings.SimulateCrashBeforeAcknowledgement,
+        settings.ProcessingDelayMilliseconds,
+        settings.SimulateNack);
     ConsumerClient consumer = new(
         settings.BrokerHost,
         settings.BrokerPort,

@@ -16,13 +16,18 @@ const elements = {
     systemBadge: document.querySelector("#systemBadge"),
     systemBadgeText: document.querySelector("#systemBadgeText"),
     pendingCount: document.querySelector("#pendingCount"),
+    inFlightCount: document.querySelector("#inFlightCount"),
+    acknowledgedCount: document.querySelector("#acknowledgedCount"),
     deadLetterCount: document.querySelector("#deadLetterCount"),
+    deadLetterListCount: document.querySelector("#deadLetterListCount"),
+    deadLetterBody: document.querySelector("#deadLetterBody"),
     lastUpdated: document.querySelector("#lastUpdated"),
     historyBody: document.querySelector("#historyBody"),
     historyCount: document.querySelector("#historyCount")
 };
 
 const history = [];
+let statusRefreshInProgress = false;
 
 function createOrderId() {
     const suffix = crypto.randomUUID().slice(0, 8).toUpperCase();
@@ -72,7 +77,70 @@ function renderSystemState(brokerState, consumerState) {
         : brokerOnly ? "Broker disponibil" : "Sistem offline";
 }
 
+function renderDeadLetters(deadLetters) {
+    const entries = Array.isArray(deadLetters) ? deadLetters : [];
+    elements.deadLetterListCount.textContent =
+        `${entries.length} ${entries.length === 1 ? "mesaj" : "mesaje"}`;
+    elements.deadLetterBody.innerHTML = "";
+
+    if (entries.length === 0) {
+        const row = document.createElement("tr");
+        row.className = "empty-row";
+        row.innerHTML = '<td colspan="5">Nu există mesaje în dead-letter queue.</td>';
+        elements.deadLetterBody.append(row);
+        return;
+    }
+
+    entries.forEach(entry => {
+        const row = document.createElement("tr");
+        const values = [
+            entry.messageId,
+            entry.topic,
+            entry.retryCount,
+            entry.reason,
+            entry.deadLetteredAtUtc
+                ? new Date(entry.deadLetteredAtUtc).toLocaleString("ro-RO")
+                : "Necunoscut"
+        ];
+
+        values.forEach((value, index) => {
+            const cell = document.createElement("td");
+            cell.textContent = value ?? "—";
+            if (index === 0) {
+                cell.className = "message-id";
+                cell.title = value ?? "";
+            } else if (index === 3) {
+                cell.className = "reason-cell";
+            }
+            row.append(cell);
+        });
+        elements.deadLetterBody.append(row);
+    });
+}
+
+function updateHistoryDeliveryStates(status) {
+    const acknowledged = new Set(
+        (status.recentAcknowledgements || [])
+            .map(entry => String(entry.messageId).toLowerCase()));
+    const deadLetters = new Set(
+        (status.deadLetters || [])
+            .map(entry => String(entry.messageId).toLowerCase()));
+
+    history.forEach(item => {
+        if (!item.messageId) return;
+        const messageId = String(item.messageId).toLowerCase();
+        if (deadLetters.has(messageId)) {
+            item.state = "dead-letter";
+        } else if (acknowledged.has(messageId)) {
+            item.state = "delivered";
+        }
+    });
+    renderHistory();
+}
+
 async function refreshStatus() {
+    if (statusRefreshInProgress) return;
+    statusRefreshInProgress = true;
     elements.refreshButton.disabled = true;
     try {
         const response = await fetch(api.status, { headers: { Accept: "application/json" } });
@@ -81,14 +149,22 @@ async function refreshStatus() {
         const status = await response.json();
         renderSystemState(status.brokerConnected, status.consumerConnected);
         elements.pendingCount.textContent = Number.isInteger(status.pendingMessages) ? status.pendingMessages : "—";
+        elements.inFlightCount.textContent = Number.isInteger(status.inFlightMessages) ? status.inFlightMessages : "—";
+        elements.acknowledgedCount.textContent = Number.isInteger(status.acknowledgedMessages) ? status.acknowledgedMessages : "—";
         elements.deadLetterCount.textContent = Number.isInteger(status.deadLetterMessages) ? status.deadLetterMessages : "—";
+        renderDeadLetters(status.deadLetters);
+        updateHistoryDeliveryStates(status);
         elements.lastUpdated.textContent = new Date().toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" });
     } catch {
         renderSystemState(false, false);
         elements.pendingCount.textContent = "—";
+        elements.inFlightCount.textContent = "—";
+        elements.acknowledgedCount.textContent = "—";
         elements.deadLetterCount.textContent = "—";
+        renderDeadLetters([]);
         elements.lastUpdated.textContent = "Backend indisponibil";
     } finally {
+        statusRefreshInProgress = false;
         elements.refreshButton.disabled = false;
     }
 }
@@ -126,9 +202,16 @@ function renderHistory() {
             row.append(cell);
         });
 
+        const states = {
+            published: { label: "Publicat", className: "pending" },
+            delivered: { label: "Livrat", className: "success" },
+            "dead-letter": { label: "Dead-letter", className: "error" },
+            failed: { label: "Respins", className: "error" }
+        };
+        const state = states[item.state] || states.failed;
         const stateCell = document.createElement("td");
-        stateCell.className = `table-state ${item.success ? "success" : "error"}`;
-        stateCell.textContent = item.success ? "Acceptat" : "Respins";
+        stateCell.className = `table-state ${state.className}`;
+        stateCell.textContent = state.label;
         row.append(stateCell);
 
         const messageCell = document.createElement("td");
@@ -164,7 +247,11 @@ async function submitOrder(event) {
 
         const detail = `messageId: ${result.messageId || "necomunicat"} · correlationId: ${result.correlationId || "necomunicat"}`;
         showResult(true, "Comanda a fost acceptată de Broker.", detail);
-        history.unshift({ ...order, success: true, messageId: result.messageId || "Acceptat" });
+        history.unshift({
+            ...order,
+            state: "published",
+            messageId: result.messageId || "Acceptat"
+        });
         elements.form.reset();
         elements.orderId.value = createOrderId();
         elements.quantity.value = 1;
@@ -172,7 +259,7 @@ async function submitOrder(event) {
     } catch (error) {
         const detail = error instanceof Error ? error.message : "Backendul nu este disponibil.";
         showResult(false, "Comanda nu a fost trimisă.", detail);
-        history.unshift({ ...order, success: false, detail });
+        history.unshift({ ...order, state: "failed", detail });
     } finally {
         elements.submitButton.disabled = false;
         renderHistory();
@@ -188,3 +275,4 @@ elements.form.addEventListener("submit", submitOrder);
 elements.orderId.value = createOrderId();
 renderHistory();
 refreshStatus();
+window.setInterval(refreshStatus, 500);

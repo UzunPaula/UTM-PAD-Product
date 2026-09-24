@@ -9,19 +9,27 @@ object followed by a line-feed character.
 | --- | --- | --- |
 | `messageId` | UUID | Required and unique for every envelope. |
 | `correlationId` | UUID | Required and stable for the complete request flow. |
-| `messageType` | string | `Publish`, `Subscribe`, `Message`, `Ack`, or `Nack`. |
+| `messageType` | string | `Publish`, `Subscribe`, `Message`, `Ack`, `Nack`, `StatusRequest`, or `StatusResponse`. |
 | `schemaVersion` | string | The supported Lab 1 version is `1.0`. |
 | `occurredAt` | timestamp | Required and expressed in UTC. |
 | `topic` | string | Required and non-empty. |
 | `sequenceNumber` | integer | Non-negative ordering value inside a topic. |
 | `retryCount` | integer | Non-negative delivery retry count. |
-| `payload` | string | Required for `Publish` and `Message`. |
-| `relatedMessageId` | UUID | Required for `Ack` and `Nack`. |
+| `payload` | string | Required for `Publish`, `Message`, and `StatusResponse`. |
+| `relatedMessageId` | UUID | Required for `Ack`, `Nack`, and `StatusResponse`. |
 | `reason` | string | Required for `Nack`. |
 
 An acknowledgement has its own `messageId`. The `relatedMessageId` identifies
 the delivered message being acknowledged. This keeps message identity separate
 from acknowledgement identity.
+
+## Monitoring exchange
+
+A `StatusRequest` uses the requested topic and no payload. The Broker replies
+with a `StatusResponse` whose `relatedMessageId` identifies the request. Its
+payload contains the Consumer connection flag, queued and in-flight counts,
+dead-letter count and summaries, and the observation timestamp. Monitoring
+uses the same TCP framing and validation rules as delivery traffic.
 
 ## Publish example
 

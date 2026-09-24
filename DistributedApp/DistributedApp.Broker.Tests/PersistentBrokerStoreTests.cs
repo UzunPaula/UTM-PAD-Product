@@ -40,6 +40,12 @@ public class PersistentBrokerStoreTests
         Assert.Equal(
             second.MessageId,
             (await store.PeekAsync("orders"))!.MessageId);
+        BrokerStoreSnapshot snapshot =
+            await store.GetSnapshotAsync("orders");
+        Assert.Equal(1, snapshot.AcknowledgedMessages);
+        AcknowledgedMessageRecord acknowledgement =
+            Assert.Single(snapshot.RecentAcknowledgements);
+        Assert.Equal(first.MessageId, acknowledgement.MessageId);
     }
 
     [Fact]
@@ -85,6 +91,31 @@ public class PersistentBrokerStoreTests
 
         Assert.NotNull(restored);
         Assert.Equal(published.MessageId, restored.MessageId);
+    }
+
+    [Fact]
+    public async Task GetSnapshotAsync_ReturnsTopicQueueAndDeadLetters()
+    {
+        using TestDirectory directory = new();
+        PersistentBrokerStore store = new(directory.StatePath);
+        Message failed = await store.EnqueueAsync(
+            CreatePublishedMessage("failed"));
+        await store.RecordFailureAsync(
+            "orders",
+            failed.MessageId,
+            "Rejected",
+            maxRetries: 0);
+        await store.EnqueueAsync(CreatePublishedMessage("pending"));
+
+        BrokerStoreSnapshot snapshot =
+            await store.GetSnapshotAsync("orders");
+
+        Assert.Equal(1, snapshot.QueuedMessages);
+        Assert.Equal(0, snapshot.AcknowledgedMessages);
+        DeadLetterMessage deadLetter =
+            Assert.Single(snapshot.DeadLetters);
+        Assert.Equal(failed.MessageId, deadLetter.Message.MessageId);
+        Assert.Equal("Rejected", deadLetter.Reason);
     }
 
     [Fact]

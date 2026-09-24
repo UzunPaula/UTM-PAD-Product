@@ -20,17 +20,39 @@ Successful response:
 ```json
 {
   "brokerConnected": true,
-  "consumerConnected": null,
-  "pendingMessages": null,
-  "deadLetterMessages": null
+  "consumerConnected": true,
+  "pendingMessages": 2,
+  "inFlightMessages": 1,
+  "deadLetterMessages": 1,
+  "acknowledgedMessages": 7,
+  "recentAcknowledgements": [
+    {
+      "messageId": "44444444-4444-4444-4444-444444444444",
+      "correlationId": "55555555-5555-5555-5555-555555555555",
+      "topic": "orders",
+      "acknowledgedAtUtc": "2026-09-24T17:30:30+00:00"
+    }
+  ],
+  "deadLetters": [
+    {
+      "messageId": "c2a3e115-6924-4ed1-a677-f3a03dd42931",
+      "correlationId": "2683f844-4773-42c2-b0d4-ae770af630a0",
+      "topic": "orders",
+      "retryCount": 4,
+      "reason": "Acknowledgement timeout.",
+      "deadLetteredAtUtc": "2026-09-24T17:30:00+00:00"
+    }
+  ],
+  "observedAtUtc": "2026-09-24T17:31:00+00:00"
 }
 ```
 
-The endpoint actively checks the TCP connection to the Broker. The current
-protocol does not expose Consumer presence, queue length, or dead-letter count,
-so those values are null and the interface displays them as unknown. If the
-request fails, the interface displays the components as offline instead of
-inventing status data.
+The Producer sends a `StatusRequest` over the normal TCP protocol. The Broker
+returns a validated `StatusResponse` built from its subscriber registry,
+in-flight deliveries, and persistent store. The dashboard refreshes these
+values every 500 milliseconds and reconciles session rows with recent ACK and
+dead-letter identifiers. If the request fails, the endpoint reports the
+Broker and Consumer as offline and returns empty counters.
 
 ### POST /api/orders
 
@@ -67,9 +89,9 @@ Use an appropriate 4xx or 5xx HTTP status for rejected requests. The interface
 keeps only a session history in memory; it adds no database or client-side
 persistence.
 
-## Ownership boundary
+## Component boundary
 
-- UI branch: HTML, CSS, JavaScript, and this API agreement.
-- Producer branch: web host, endpoint implementation, message creation, TCP
-  connection, and Broker acknowledgement handling.
-- Broker and Consumer branches: no UI dependency.
+- The browser communicates only with the Producer HTTP API.
+- The Producer communicates with the Broker through versioned JSON Lines.
+- The Broker owns queue, subscriber, in-flight, retry, and dead-letter state.
+- The Consumer has no dependency on the web interface.

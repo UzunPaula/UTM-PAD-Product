@@ -194,9 +194,11 @@ th, td { padding: 13px 12px; border-bottom: 1px solid var(--border); font-size: 
 th { color: var(--muted); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
 .empty-row td { padding: 32px 12px; color: var(--muted); text-align: center; }
 .table-state { font-weight: 800; }
+.table-state.pending { color: var(--warning); }
 .table-state.success { color: var(--success); }
 .table-state.error { color: var(--danger); }
 .message-id { max-width: 190px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.reason-cell { min-width: 210px; color: var(--muted); white-space: normal; }
 
 footer { padding: 22px; color: #718096; font-size: .78rem; text-align: center; }
 

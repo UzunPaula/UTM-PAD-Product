@@ -6,15 +6,21 @@ public sealed class ConsumerMessageHandler
 {
     private readonly MessageProcessor _messageProcessor;
     private readonly bool _simulateCrashBeforeAcknowledgement;
+    private readonly int _processingDelayMilliseconds;
+    private readonly bool _simulateNack;
     private bool _crashWasSimulated;
 
     public ConsumerMessageHandler(
         MessageProcessor messageProcessor,
-        bool simulateCrashBeforeAcknowledgement = false)
+        bool simulateCrashBeforeAcknowledgement = false,
+        int processingDelayMilliseconds = 0,
+        bool simulateNack = false)
     {
         _messageProcessor = messageProcessor;
         _simulateCrashBeforeAcknowledgement =
             simulateCrashBeforeAcknowledgement;
+        _processingDelayMilliseconds = processingDelayMilliseconds;
+        _simulateNack = simulateNack;
     }
 
     public async Task<Message> HandleAsync(
@@ -41,6 +47,21 @@ public sealed class ConsumerMessageHandler
                 message,
                 MessageType.Nack,
                 $"Unsupported message type: {message.Type}.");
+        }
+
+        if (_processingDelayMilliseconds > 0)
+        {
+            await Task.Delay(
+                _processingDelayMilliseconds,
+                cancellationToken);
+        }
+
+        if (_simulateNack)
+        {
+            return CreateResponse(
+                message,
+                MessageType.Nack,
+                "Consumer rejection was enabled in external settings.");
         }
 
         ProcessingResult result = await _messageProcessor.ProcessAsync(

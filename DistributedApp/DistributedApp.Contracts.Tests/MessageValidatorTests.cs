@@ -70,6 +70,29 @@ public class MessageValidatorTests
         Assert.True(result.IsValid);
     }
 
+    [Fact]
+    public void Validate_StatusMessagesApplyRequestAndResponseRules()
+    {
+        Message request = CreateValidMessage();
+        request.Type = MessageType.StatusRequest;
+        request.Payload = string.Empty;
+
+        Message response = CreateValidMessage();
+        response.Type = MessageType.StatusResponse;
+        response.RelatedMessageId = request.MessageId;
+
+        Assert.True(MessageValidator.Validate(request).IsValid);
+        Assert.True(MessageValidator.Validate(response).IsValid);
+
+        response.Payload = string.Empty;
+        response.RelatedMessageId = null;
+        MessageValidationResult invalid =
+            MessageValidator.Validate(response);
+
+        Assert.Contains(nameof(Message.Payload), invalid.Errors);
+        Assert.Contains(nameof(Message.RelatedMessageId), invalid.Errors);
+    }
+
     private static Message CreateValidMessage()
     {
         return new Message

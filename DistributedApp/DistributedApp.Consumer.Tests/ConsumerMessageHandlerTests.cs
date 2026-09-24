@@ -85,6 +85,33 @@ public class ConsumerMessageHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_ReturnsNackWhenFailureInjectionIsEnabled()
+    {
+        string directory = CreateTestDirectory();
+
+        try
+        {
+            ProcessedMessageStore store =
+                new(Path.Combine(directory, "state.json"));
+            ConsumerMessageHandler handler = new(
+                new MessageProcessor(store),
+                simulateNack: true);
+            Message incoming = CreateMessage();
+
+            Message response = await handler.HandleAsync(incoming);
+
+            Assert.Equal(MessageType.Nack, response.Type);
+            Assert.Equal(incoming.MessageId, response.RelatedMessageId);
+            Assert.Contains("external settings", response.Reason);
+            Assert.False(store.IsProcessed(incoming.MessageId));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CrashBeforeAck_RestartAcknowledgesWithoutRepeatingEffect()
     {
         string directory = CreateTestDirectory();

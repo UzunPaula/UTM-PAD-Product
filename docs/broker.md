@@ -41,6 +41,16 @@ restart or consumer reconnection, it is delivered again with the same
 messageId. Consumer deduplication prevents the local effect from being
 repeated.
 
+## Live monitoring
+
+The Broker handles `StatusRequest` messages without changing persistent
+state. A `StatusResponse` reports the requested topic's active Consumer,
+queued messages excluding the active in-flight delivery, in-flight count, and
+persistent ACK and dead-letter entries. The Producer exposes this snapshot to
+the dashboard through its HTTP status endpoint. A bounded list of the latest
+100 acknowledgements lets the dashboard move a published session row to its
+final delivered state without unbounded history growth.
+
 ## Verification
 
 Run from the DistributedApp directory:

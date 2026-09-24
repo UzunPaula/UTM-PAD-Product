@@ -3,5 +3,7 @@
   "brokerPort": 5000,
   "topic": "orders",
   "stateFilePath": "data/consumer-state.json",
-  "simulateCrashBeforeAcknowledgement": false
+  "simulateCrashBeforeAcknowledgement": false,
+  "processingDelayMilliseconds": 1200,
+  "simulateNack": true
 }

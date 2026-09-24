@@ -6,5 +6,7 @@ public enum MessageType
     Subscribe,
     Message,
     Ack,
-    Nack
+    Nack,
+    StatusRequest,
+    StatusResponse
 }

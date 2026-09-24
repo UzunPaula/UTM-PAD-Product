@@ -73,11 +73,15 @@ public static class MessageValidator
 
     private static bool RequiresPayload(MessageType type)
     {
-        return type is MessageType.Publish or MessageType.Message;
+        return type is MessageType.Publish
+            or MessageType.Message
+            or MessageType.StatusResponse;
     }
 
     private static bool RequiresRelatedMessage(MessageType type)
     {
-        return type is MessageType.Ack or MessageType.Nack;
+        return type is MessageType.Ack
+            or MessageType.Nack
+            or MessageType.StatusResponse;
     }
 }

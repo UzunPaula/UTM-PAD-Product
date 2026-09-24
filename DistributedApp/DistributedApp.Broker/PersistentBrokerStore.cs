@@ -92,7 +92,29 @@ public sealed class PersistentBrokerStore
             }
 
             // Only the head can be acknowledged, which preserves topic order.
+            Message acknowledged = queue[0];
             queue.RemoveAt(0);
+            _state.AcknowledgedMessageCounts[topic] =
+                _state.AcknowledgedMessageCounts.GetValueOrDefault(topic) + 1;
+            _state.RecentAcknowledgements.Add(
+                new AcknowledgedMessageRecord
+                {
+                    MessageId = acknowledged.MessageId,
+                    CorrelationId = acknowledged.CorrelationId,
+                    Topic = acknowledged.Topic,
+                    AcknowledgedAtUtc = DateTimeOffset.UtcNow
+                });
+
+            const int maximumRecentAcknowledgements = 100;
+            if (_state.RecentAcknowledgements.Count
+                > maximumRecentAcknowledgements)
+            {
+                _state.RecentAcknowledgements.RemoveRange(
+                    0,
+                    _state.RecentAcknowledgements.Count
+                    - maximumRecentAcknowledgements);
+            }
+
             await SaveAsync(cancellationToken);
             return true;
         }
@@ -168,6 +190,50 @@ public sealed class PersistentBrokerStore
         }
     }
 
+    public async Task<BrokerStoreSnapshot> GetSnapshotAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        await _gate.WaitAsync(cancellationToken);
+
+        try
+        {
+            int queuedMessages = _state.Queues.TryGetValue(
+                topic,
+                out List<Message>? queue)
+                ? queue.Count
+                : 0;
+            DeadLetterMessage[] deadLetters = _state.DeadLetters
+                .Where(entry => string.Equals(
+                    entry.Message.Topic,
+                    topic,
+                    StringComparison.Ordinal))
+                .Select(CopyDeadLetter)
+                .ToArray();
+            long acknowledgedMessages =
+                _state.AcknowledgedMessageCounts.GetValueOrDefault(topic);
+            AcknowledgedMessageRecord[] recentAcknowledgements =
+                _state.RecentAcknowledgements
+                    .Where(entry => string.Equals(
+                        entry.Topic,
+                        topic,
+                        StringComparison.Ordinal))
+                    .Select(CopyAcknowledgement)
+                    .ToArray();
+
+            return new BrokerStoreSnapshot(
+                queuedMessages,
+                deadLetters,
+                acknowledgedMessages,
+                recentAcknowledgements);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     private BrokerState Load()
     {
         if (!File.Exists(_filePath))
@@ -235,6 +301,29 @@ public sealed class PersistentBrokerStore
             Payload = source.Payload,
             RelatedMessageId = source.RelatedMessageId,
             Reason = source.Reason
+        };
+    }
+
+    private static DeadLetterMessage CopyDeadLetter(
+        DeadLetterMessage source)
+    {
+        return new DeadLetterMessage
+        {
+            Message = Copy(source.Message),
+            Reason = source.Reason,
+            DeadLetteredAtUtc = source.DeadLetteredAtUtc
+        };
+    }
+
+    private static AcknowledgedMessageRecord CopyAcknowledgement(
+        AcknowledgedMessageRecord source)
+    {
+        return new AcknowledgedMessageRecord
+        {
+            MessageId = source.MessageId,
+            CorrelationId = source.CorrelationId,
+            Topic = source.Topic,
+            AcknowledgedAtUtc = source.AcknowledgedAtUtc
         };
     }
 }

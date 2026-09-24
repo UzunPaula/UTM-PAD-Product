@@ -103,14 +103,16 @@
 
                 <div class="metric-list">
                     <div class="metric"><span>Mesaje în așteptare</span><strong id="pendingCount">—</strong></div>
+                    <div class="metric"><span>În curs de livrare</span><strong id="inFlightCount">—</strong></div>
+                    <div class="metric"><span>Livrări confirmate</span><strong id="acknowledgedCount">—</strong></div>
                     <div class="metric"><span>Dead-letter queue</span><strong id="deadLetterCount">—</strong></div>
                     <div class="metric"><span>Ultima actualizare</span><strong id="lastUpdated">Niciodată</strong></div>
                 </div>
 
                 <div class="flow" aria-label="Fluxul mesajului">
-                    <div><span class="flow-node">Producer</span><span aria-hidden="true">→</span></div>
-                    <div><span class="flow-node">Broker</span><span aria-hidden="true">→</span></div>
-                    <div><span class="flow-node">Consumer</span><span class="flow-finish">ACK / NACK</span></div>
+                    <div><span class="flow-node">Producer</span><span aria-hidden="true">→</span><span class="flow-finish">PUBLISH</span></div>
+                    <div><span class="flow-node">Broker</span><span aria-hidden="true">→</span><span class="flow-finish">MESSAGE</span></div>
+                    <div><span class="flow-node">Consumer</span><span aria-hidden="true">→</span><span class="flow-finish">ACK / NACK</span></div>
                 </div>
             </aside>
         </section>
@@ -125,6 +127,29 @@
                     <thead><tr><th>Comandă</th><th>Produs</th><th>Cantitate</th><th>Rezultat</th><th>Mesaj</th></tr></thead>
                     <tbody id="historyBody">
                         <tr class="empty-row"><td colspan="5">Nu au fost trimise comenzi în această sesiune.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel history-panel" aria-labelledby="deadLetterTitle">
+            <div class="panel-heading">
+                <div><p class="eyebrow">Mesaje eșuate</p><h2 id="deadLetterTitle">Dead-letter queue</h2></div>
+                <span id="deadLetterListCount" class="count-label">0 mesaje</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Mesaj</th>
+                            <th>Topic</th>
+                            <th>Retry-uri</th>
+                            <th>Motiv</th>
+                            <th>Moment</th>
+                        </tr>
+                    </thead>
+                    <tbody id="deadLetterBody">
+                        <tr class="empty-row"><td colspan="5">Nu există mesaje în dead-letter queue.</td></tr>
                     </tbody>
                 </table>
             </div>

@@ -26,19 +26,54 @@ app.MapGet(
     "/api/status",
     async (
         TcpClientService tcpClient,
+        ILogger<Program> logger,
         CancellationToken cancellationToken) =>
     {
-        bool brokerConnected = await tcpClient.CanConnectAsync(
-            cancellationToken);
-
-        return Results.Ok(new
+        try
         {
-            brokerConnected,
-            // The current protocol does not expose consumer or queue state.
-            consumerConnected = (bool?)null,
-            pendingMessages = (int?)null,
-            deadLetterMessages = (int?)null
-        });
+            BrokerStatusSnapshot status =
+                await tcpClient.GetBrokerStatusAsync(
+                    "orders",
+                    cancellationToken);
+
+            return Results.Ok(new
+            {
+                brokerConnected = true,
+                status.ConsumerConnected,
+                status.PendingMessages,
+                status.InFlightMessages,
+                status.DeadLetterMessages,
+                status.AcknowledgedMessages,
+                status.RecentAcknowledgements,
+                status.DeadLetters,
+                status.ObservedAtUtc
+            });
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or System.Net.Sockets.SocketException
+            or System.Text.Json.JsonException
+            or InvalidDataException
+            or TimeoutException)
+        {
+            logger.LogDebug(
+                exception,
+                "Broker status is unavailable.");
+
+            return Results.Ok(new
+            {
+                brokerConnected = false,
+                consumerConnected = false,
+                pendingMessages = 0,
+                inFlightMessages = 0,
+                deadLetterMessages = 0,
+                acknowledgedMessages = 0,
+                recentAcknowledgements =
+                    Array.Empty<AcknowledgementSummary>(),
+                deadLetters = Array.Empty<DeadLetterSummary>(),
+                observedAtUtc = DateTimeOffset.UtcNow
+            });
+        }
     });
 
 app.MapPost(

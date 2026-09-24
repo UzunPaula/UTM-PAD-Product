@@ -43,7 +43,10 @@ error instead of silently discarding deduplication information.
 - `brokerPort`: TCP port in the range 1-65535;
 - `topic`: subscribed topic;
 - `stateFilePath`: absolute path or a path relative to the settings file;
-- `simulateCrashBeforeAcknowledgement`: controlled failure injection switch.
+- `simulateCrashBeforeAcknowledgement`: controlled crash injection switch;
+- `processingDelayMilliseconds`: configurable 0-2500 ms processing delay;
+- `simulateNack`: controlled rejection switch for retry and dead-letter
+  demonstrations.
 
 The repository contains only local example values and no secrets.
 

@@ -8,6 +8,9 @@ namespace DistributedApp.Broker;
 
 public sealed class BrokerServer
 {
+    private static readonly JsonSerializerOptions StatusJsonOptions =
+        new(JsonSerializerDefaults.Web);
+
     private readonly BrokerSettings _settings;
     private readonly PersistentBrokerStore _store;
     private readonly TcpListener _listener;
@@ -218,6 +221,13 @@ public sealed class BrokerServer
                     message.RelatedMessageId);
                 break;
 
+            case MessageType.StatusRequest:
+                await SendStatusAsync(
+                    connection,
+                    message,
+                    cancellationToken);
+                break;
+
             default:
                 BrokerLog.Write(
                     "Warning",
@@ -226,6 +236,65 @@ public sealed class BrokerServer
                     message);
                 break;
         }
+    }
+
+    private async Task SendStatusAsync(
+        BrokerClientConnection connection,
+        Message request,
+        CancellationToken cancellationToken)
+    {
+        BrokerStoreSnapshot storeSnapshot =
+            await _store.GetSnapshotAsync(
+                request.Topic,
+                cancellationToken);
+        int inFlightMessages = _inFlight.ContainsKey(request.Topic)
+            ? 1
+            : 0;
+        BrokerStatusSnapshot status = new()
+        {
+            Topic = request.Topic,
+            ConsumerConnected = _subscribers.ContainsKey(request.Topic),
+            PendingMessages = Math.Max(
+                0,
+                storeSnapshot.QueuedMessages - inFlightMessages),
+            InFlightMessages = inFlightMessages,
+            DeadLetterMessages = storeSnapshot.DeadLetters.Count,
+            AcknowledgedMessages = storeSnapshot.AcknowledgedMessages,
+            RecentAcknowledgements = storeSnapshot.RecentAcknowledgements
+                .OrderByDescending(entry => entry.AcknowledgedAtUtc)
+                .Select(entry => new AcknowledgementSummary
+                {
+                    MessageId = entry.MessageId,
+                    CorrelationId = entry.CorrelationId,
+                    Topic = entry.Topic,
+                    AcknowledgedAtUtc = entry.AcknowledgedAtUtc
+                })
+                .ToList(),
+            DeadLetters = storeSnapshot.DeadLetters
+                .OrderByDescending(entry => entry.DeadLetteredAtUtc)
+                .Select(entry => new DeadLetterSummary
+                {
+                    MessageId = entry.Message.MessageId,
+                    CorrelationId = entry.Message.CorrelationId,
+                    Topic = entry.Message.Topic,
+                    RetryCount = entry.Message.RetryCount,
+                    Reason = entry.Reason,
+                    DeadLetteredAtUtc = entry.DeadLetteredAtUtc
+                })
+                .ToList(),
+            ObservedAtUtc = DateTimeOffset.UtcNow
+        };
+        string payload = JsonSerializer.Serialize(
+            status,
+            StatusJsonOptions);
+
+        await connection.SendAsync(
+            CreateResponse(
+                request,
+                MessageType.StatusResponse,
+                null,
+                payload),
+            cancellationToken);
     }
 
     private async Task HandleAcknowledgementAsync(
@@ -445,7 +514,8 @@ public sealed class BrokerServer
     private static Message CreateResponse(
         Message incoming,
         MessageType type,
-        string? reason)
+        string? reason,
+        string payload = "")
     {
         return new Message
         {
@@ -457,7 +527,7 @@ public sealed class BrokerServer
             Topic = incoming.Topic,
             SequenceNumber = incoming.SequenceNumber,
             RetryCount = 0,
-            Payload = string.Empty,
+            Payload = payload,
             RelatedMessageId = incoming.MessageId,
             Reason = reason
         };

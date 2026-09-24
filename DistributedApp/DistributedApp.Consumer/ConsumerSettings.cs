@@ -18,6 +18,10 @@ public sealed class ConsumerSettings
 
     public bool SimulateCrashBeforeAcknowledgement { get; set; }
 
+    public int ProcessingDelayMilliseconds { get; set; }
+
+    public bool SimulateNack { get; set; }
+
     public static ConsumerSettings Load(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
@@ -89,6 +93,12 @@ public sealed class ConsumerSettings
         {
             throw new InvalidDataException(
                 "StateFilePath is required.");
+        }
+
+        if (ProcessingDelayMilliseconds is < 0 or > 2500)
+        {
+            throw new InvalidDataException(
+                "ProcessingDelayMilliseconds must be between 0 and 2500.");
         }
     }
 }

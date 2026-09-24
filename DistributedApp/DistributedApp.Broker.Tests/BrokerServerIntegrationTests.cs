@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using DistributedApp.Consumer;
 using DistributedApp.Contracts;
 
@@ -129,6 +130,83 @@ public class BrokerServerIntegrationTests
     }
 
     [Fact]
+    public async Task RunAsync_ReportsLiveQueueConsumerAndDeadLetterState()
+    {
+        using TestDirectory directory = new();
+        using CancellationTokenSource cancellation =
+            new(TimeSpan.FromSeconds(10));
+        BrokerSettings settings = CreateSettings(directory.StatePath);
+        settings.MaxRetries = 0;
+        PersistentBrokerStore store = new(directory.StatePath);
+        BrokerServer server = new(settings, store);
+        Task serverTask = server.RunAsync(cancellation.Token);
+
+        await using TestClient monitor =
+            await TestClient.ConnectAsync(server.BoundPort);
+        BrokerStatusSnapshot initial =
+            await RequestStatusAsync(monitor);
+        Assert.False(initial.ConsumerConnected);
+        Assert.Equal(0, initial.PendingMessages);
+        Assert.Equal(0, initial.InFlightMessages);
+        Assert.Equal(0, initial.DeadLetterMessages);
+
+        await using TestClient producer =
+            await TestClient.ConnectAsync(server.BoundPort);
+        Message published = CreateMessage("monitored");
+        await producer.SendAsync(published);
+        await producer.ReceiveAsync();
+
+        BrokerStatusSnapshot queued =
+            await RequestStatusAsync(monitor);
+        Assert.False(queued.ConsumerConnected);
+        Assert.Equal(1, queued.PendingMessages);
+        Assert.Equal(0, queued.InFlightMessages);
+
+        await using TestClient consumer =
+            await TestClient.ConnectAsync(server.BoundPort);
+        await consumer.SendAsync(CreateSubscription());
+        Message delivered = await consumer.ReceiveAsync();
+
+        BrokerStatusSnapshot delivering =
+            await RequestStatusAsync(monitor);
+        Assert.True(delivering.ConsumerConnected);
+        Assert.Equal(0, delivering.PendingMessages);
+        Assert.Equal(1, delivering.InFlightMessages);
+
+        await consumer.SendAsync(
+            CreateNack(delivered, "Rejected for monitoring test."));
+        await WaitUntilAsync(
+            async () => (await store.GetDeadLettersAsync()).Count == 1);
+
+        BrokerStatusSnapshot failed =
+            await RequestStatusAsync(monitor);
+        Assert.Equal(0, failed.InFlightMessages);
+        Assert.Equal(1, failed.DeadLetterMessages);
+        DeadLetterSummary deadLetter =
+            Assert.Single(failed.DeadLetters);
+        Assert.Equal(published.MessageId, deadLetter.MessageId);
+        Assert.Equal("Rejected for monitoring test.", deadLetter.Reason);
+
+        Message completed = CreateMessage("completed");
+        await producer.SendAsync(completed);
+        await producer.ReceiveAsync();
+        Message completedDelivery = await consumer.ReceiveAsync();
+        await consumer.SendAsync(CreateAck(completedDelivery));
+        await WaitUntilAsync(
+            async () => await store.PeekAsync("orders") == null);
+
+        BrokerStatusSnapshot completedStatus =
+            await RequestStatusAsync(monitor);
+        Assert.Equal(1, completedStatus.AcknowledgedMessages);
+        AcknowledgementSummary acknowledgement =
+            Assert.Single(completedStatus.RecentAcknowledgements);
+        Assert.Equal(completed.MessageId, acknowledgement.MessageId);
+
+        cancellation.Cancel();
+        await serverTask;
+    }
+
+    [Fact]
     public async Task RunAsync_RedeliversAfterConsumerCrashWithoutDuplicateEffect()
     {
         using TestDirectory directory = new();
@@ -247,6 +325,29 @@ public class BrokerServerIntegrationTests
         nack.Type = MessageType.Nack;
         nack.Reason = reason;
         return nack;
+    }
+
+    private static async Task<BrokerStatusSnapshot> RequestStatusAsync(
+        TestClient client)
+    {
+        Message request = new()
+        {
+            MessageId = Guid.NewGuid(),
+            CorrelationId = Guid.NewGuid(),
+            Type = MessageType.StatusRequest,
+            SchemaVersion = MessageSchema.CurrentVersion,
+            OccurredAtUtc = DateTimeOffset.UtcNow,
+            Topic = "orders"
+        };
+        await client.SendAsync(request);
+        Message response = await client.ReceiveAsync();
+
+        Assert.Equal(MessageType.StatusResponse, response.Type);
+        Assert.Equal(request.MessageId, response.RelatedMessageId);
+        return JsonSerializer.Deserialize<BrokerStatusSnapshot>(
+                   response.Payload)
+               ?? throw new InvalidDataException(
+                   "Expected a broker status payload.");
     }
 
     private static async Task WaitUntilAsync(Func<Task<bool>> condition)

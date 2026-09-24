@@ -20,7 +20,9 @@ public class ConsumerSettingsTests
                   "brokerPort": 5000,
                   "topic": "orders",
                   "stateFilePath": "data/state.json",
-                  "simulateCrashBeforeAcknowledgement": true
+                  "simulateCrashBeforeAcknowledgement": true,
+                  "processingDelayMilliseconds": 1200,
+                  "simulateNack": true
                 }
                 """);
 
@@ -34,6 +36,8 @@ public class ConsumerSettingsTests
                 Path.Combine(directory, "data", "state.json"),
                 settings.StateFilePath);
             Assert.True(settings.SimulateCrashBeforeAcknowledgement);
+            Assert.Equal(1200, settings.ProcessingDelayMilliseconds);
+            Assert.True(settings.SimulateNack);
         }
         finally
         {
@@ -59,6 +63,37 @@ public class ConsumerSettingsTests
                   "brokerPort": 0,
                   "topic": "orders",
                   "stateFilePath": "data/state.json"
+                }
+                """);
+
+            Assert.Throws<InvalidDataException>(
+                () => ConsumerSettings.Load(settingsPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_RejectsProcessingDelayAboveAcknowledgementWindow()
+    {
+        string directory = CreateTestDirectory();
+        string settingsPath = Path.Combine(
+            directory,
+            "consumer.settings.json");
+
+        try
+        {
+            File.WriteAllText(
+                settingsPath,
+                """
+                {
+                  "brokerHost": "127.0.0.1",
+                  "brokerPort": 5000,
+                  "topic": "orders",
+                  "stateFilePath": "data/state.json",
+                  "processingDelayMilliseconds": 3000
                 }
                 """);
 
