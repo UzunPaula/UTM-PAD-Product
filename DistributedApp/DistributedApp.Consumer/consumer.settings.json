@@ -1,0 +1,7 @@
+{
+  "brokerHost": "127.0.0.1",
+  "brokerPort": 5000,
+  "topic": "orders",
+  "stateFilePath": "data/consumer-state.json",
+  "simulateCrashBeforeAcknowledgement": false
+}
