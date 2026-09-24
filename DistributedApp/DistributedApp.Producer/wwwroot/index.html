@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ro">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Panou pentru trimiterea și urmărirea comenzilor distribuite.">
+    <title>Distributed Orders</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="app-header">
+        <a class="brand" href="#" aria-label="Distributed Orders - pagina principală">
+            <span class="brand-mark" aria-hidden="true">DO</span>
+            <span>
+                <strong>Distributed Orders</strong>
+                <small>Reliable messaging dashboard</small>
+            </span>
+        </a>
+
+        <button id="refreshButton" class="secondary-button" type="button">
+            <span aria-hidden="true">↻</span> Actualizează
+        </button>
+    </header>
+
+    <main class="page-shell">
+        <section class="hero" aria-labelledby="pageTitle">
+            <div>
+                <p class="eyebrow">Sistem distribuit</p>
+                <h1 id="pageTitle">Trimite și urmărește comenzile</h1>
+                <p>Producerul publică o comandă, Brokerul o păstrează și o livrează, iar Consumerul confirmă procesarea.</p>
+            </div>
+            <div id="systemBadge" class="system-badge offline" role="status">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="systemBadgeText">Sistem offline</span>
+            </div>
+        </section>
+
+        <section class="status-grid" aria-label="Starea componentelor">
+            <article class="status-card">
+                <div class="status-card-heading">
+                    <span class="component-icon producer-icon" aria-hidden="true">P</span>
+                    <div><h2>Producer</h2><p>Interfață și publicare</p></div>
+                </div>
+                <span class="state-pill ready">Pregătit</span>
+            </article>
+            <article class="status-card">
+                <div class="status-card-heading">
+                    <span class="component-icon broker-icon" aria-hidden="true">B</span>
+                    <div><h2>Broker</h2><p>Cozi și livrare</p></div>
+                </div>
+                <span id="brokerState" class="state-pill offline">Offline</span>
+            </article>
+            <article class="status-card">
+                <div class="status-card-heading">
+                    <span class="component-icon consumer-icon" aria-hidden="true">C</span>
+                    <div><h2>Consumer</h2><p>Procesare și ACK</p></div>
+                </div>
+                <span id="consumerState" class="state-pill offline">Offline</span>
+            </article>
+        </section>
+
+        <section class="content-grid">
+            <article class="panel order-panel">
+                <div class="panel-heading">
+                    <div><p class="eyebrow">Mesaj nou</p><h2>Creează o comandă</h2></div>
+                    <span class="topic-label">topic: orders</span>
+                </div>
+
+                <form id="orderForm" novalidate>
+                    <div class="field">
+                        <label for="orderId">ID comandă</label>
+                        <div class="input-with-action">
+                            <input id="orderId" name="orderId" type="text" maxlength="64" autocomplete="off" required>
+                            <button id="generateOrderId" type="button" class="input-action">Generează</button>
+                        </div>
+                        <small class="field-error" data-error-for="orderId"></small>
+                    </div>
+
+                    <div class="field">
+                        <label for="product">Produs</label>
+                        <input id="product" name="product" type="text" maxlength="100" placeholder="Ex.: Tastatură mecanică" required>
+                        <small class="field-error" data-error-for="product"></small>
+                    </div>
+
+                    <div class="field">
+                        <label for="quantity">Cantitate</label>
+                        <input id="quantity" name="quantity" type="number" min="1" max="1000" value="1" required>
+                        <small class="field-error" data-error-for="quantity"></small>
+                    </div>
+
+                    <button id="submitButton" class="primary-button" type="submit">
+                        <span>Trimite comanda</span><span aria-hidden="true">→</span>
+                    </button>
+                </form>
+
+                <div id="submissionResult" class="result-card" hidden role="status" aria-live="polite"></div>
+            </article>
+
+            <aside class="panel metrics-panel" aria-labelledby="metricsTitle">
+                <div class="panel-heading">
+                    <div><p class="eyebrow">Monitorizare</p><h2 id="metricsTitle">Starea livrării</h2></div>
+                </div>
+
+                <div class="metric-list">
+                    <div class="metric"><span>Mesaje în așteptare</span><strong id="pendingCount">—</strong></div>
+                    <div class="metric"><span>Dead-letter queue</span><strong id="deadLetterCount">—</strong></div>
+                    <div class="metric"><span>Ultima actualizare</span><strong id="lastUpdated">Niciodată</strong></div>
+                </div>
+
+                <div class="flow" aria-label="Fluxul mesajului">
+                    <div><span class="flow-node">Producer</span><span aria-hidden="true">→</span></div>
+                    <div><span class="flow-node">Broker</span><span aria-hidden="true">→</span></div>
+                    <div><span class="flow-node">Consumer</span><span class="flow-finish">ACK / NACK</span></div>
+                </div>
+            </aside>
+        </section>
+
+        <section class="panel history-panel" aria-labelledby="historyTitle">
+            <div class="panel-heading">
+                <div><p class="eyebrow">Sesiunea curentă</p><h2 id="historyTitle">Comenzi trimise</h2></div>
+                <span id="historyCount" class="count-label">0 comenzi</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Comandă</th><th>Produs</th><th>Cantitate</th><th>Rezultat</th><th>Mesaj</th></tr></thead>
+                    <tbody id="historyBody">
+                        <tr class="empty-row"><td colspan="5">Nu au fost trimise comenzi în această sesiune.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <footer>Laborator PAD · Comunicare Producer → Broker → Consumer</footer>
+    <script src="app.js"></script>
+</body>
+</html>
