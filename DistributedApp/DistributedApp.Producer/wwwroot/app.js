@@ -51,20 +51,25 @@ function validateOrder(order) {
 }
 
 function setComponentState(element, isOnline) {
-    element.textContent = isOnline ? "Online" : "Offline";
-    element.className = `state-pill ${isOnline ? "online" : "offline"}`;
+    const state = isOnline === true
+        ? { label: "Online", className: "online" }
+        : isOnline === false
+            ? { label: "Offline", className: "offline" }
+            : { label: "Necunoscut", className: "unknown" };
+    element.textContent = state.label;
+    element.className = `state-pill ${state.className}`;
 }
 
-function renderSystemState(brokerOnline, consumerOnline) {
-    setComponentState(elements.brokerState, brokerOnline);
-    setComponentState(elements.consumerState, consumerOnline);
+function renderSystemState(brokerState, consumerState) {
+    setComponentState(elements.brokerState, brokerState);
+    setComponentState(elements.consumerState, consumerState);
 
-    const bothOnline = brokerOnline && consumerOnline;
-    const oneOnline = brokerOnline || consumerOnline;
-    elements.systemBadge.className = `system-badge ${bothOnline ? "online" : oneOnline ? "degraded" : "offline"}`;
+    const bothOnline = brokerState === true && consumerState === true;
+    const brokerOnly = brokerState === true;
+    elements.systemBadge.className = `system-badge ${bothOnline ? "online" : brokerOnly ? "degraded" : "offline"}`;
     elements.systemBadgeText.textContent = bothOnline
         ? "Sistem operațional"
-        : oneOnline ? "Sistem parțial disponibil" : "Sistem offline";
+        : brokerOnly ? "Broker disponibil" : "Sistem offline";
 }
 
 async function refreshStatus() {
@@ -74,7 +79,7 @@ async function refreshStatus() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const status = await response.json();
-        renderSystemState(Boolean(status.brokerConnected), Boolean(status.consumerConnected));
+        renderSystemState(status.brokerConnected, status.consumerConnected);
         elements.pendingCount.textContent = Number.isInteger(status.pendingMessages) ? status.pendingMessages : "—";
         elements.deadLetterCount.textContent = Number.isInteger(status.deadLetterMessages) ? status.deadLetterMessages : "—";
         elements.lastUpdated.textContent = new Date().toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" });

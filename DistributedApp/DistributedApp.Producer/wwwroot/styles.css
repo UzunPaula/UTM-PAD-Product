@@ -132,6 +132,7 @@ h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.3rem); line-height: 1.05; letter-s
 .state-pill { padding: 6px 9px; font-size: .72rem; font-weight: 800; }
 .state-pill.ready, .state-pill.online { color: var(--success); background: rgba(61, 220, 151, .11); }
 .state-pill.offline { color: var(--danger); background: rgba(255, 107, 122, .11); }
+.state-pill.unknown { color: var(--warning); background: rgba(255, 191, 105, .11); }
 
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); gap: 14px; }
 .panel { padding: 26px; }

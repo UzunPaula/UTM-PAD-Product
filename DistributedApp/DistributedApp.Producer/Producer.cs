@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using System.Text.Json;
 using DistributedApp.Contracts;
 
@@ -6,66 +5,22 @@ namespace DistributedApp.Producer;
 
 public sealed class Producer
 {
-    private readonly TcpClientService _tcpClient = new();
+    private readonly TcpClientService _tcpClient;
 
-    public async Task StartAsync(
-        CancellationToken cancellationToken = default)
+    public Producer(TcpClientService tcpClient)
     {
-        Console.WriteLine("=== PRODUCER ===");
-        Console.WriteLine("Producer pornit.");
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            Console.WriteLine();
-            Console.WriteLine("1. Publish Order");
-            Console.WriteLine("0. Exit");
-            Console.Write(">> ");
-
-            string? choice = Console.ReadLine();
-
-            if (choice == "1")
-            {
-                await PublishOrderAsync(cancellationToken);
-            }
-            else if (choice == "0")
-            {
-                return;
-            }
-            else
-            {
-                Console.WriteLine("Opțiune invalidă.");
-            }
-        }
+        _tcpClient = tcpClient;
     }
 
-    private async Task PublishOrderAsync(
-        CancellationToken cancellationToken)
+    public async Task<PublishResult> PublishOrderAsync(
+        OrderPayload order,
+        CancellationToken cancellationToken = default)
     {
-        Console.Write("Order ID: ");
-        string orderId = Console.ReadLine()?.Trim() ?? string.Empty;
-
-        Console.Write("Product: ");
-        string product = Console.ReadLine()?.Trim() ?? string.Empty;
-
-        Console.Write("Quantity: ");
-        bool hasValidQuantity = int.TryParse(
-            Console.ReadLine(),
-            out int quantity) && quantity > 0;
-
-        if (string.IsNullOrWhiteSpace(orderId)
-            || string.IsNullOrWhiteSpace(product)
-            || !hasValidQuantity)
+        string? validationError = ValidateOrder(order);
+        if (validationError is not null)
         {
-            Console.WriteLine("Comandă invalidă. Verifică datele introduse.");
-            return;
+            throw new ArgumentException(validationError, nameof(order));
         }
-
-        OrderPayload orderPayload = new()
-        {
-            OrderId = orderId,
-            Product = product,
-            Quantity = quantity
-        };
 
         Message message = new()
         {
@@ -77,46 +32,60 @@ public sealed class Producer
             Topic = "orders",
             SequenceNumber = 0,
             RetryCount = 0,
-            Payload = JsonSerializer.Serialize(orderPayload)
+            Payload = JsonSerializer.Serialize(order)
         };
 
-        try
-        {
-            Message response = await _tcpClient.SendAsync(
-                message,
-                cancellationToken);
+        Message response = await _tcpClient.SendAsync(
+            message,
+            cancellationToken);
 
-            if (response.RelatedMessageId != message.MessageId)
-            {
-                throw new InvalidDataException(
-                    "Răspunsul Brokerului nu corespunde mesajului trimis.");
-            }
-
-            if (response.Type == MessageType.Ack)
-            {
-                // ACK confirms that the Broker persisted the message.
-                Console.WriteLine(
-                    $"Comandă acceptată de Broker. messageId={message.MessageId}");
-            }
-            else if (response.Type == MessageType.Nack)
-            {
-                Console.WriteLine(
-                    $"Comandă respinsă de Broker: {response.Reason ?? "motiv necunoscut"}");
-            }
-            else
-            {
-                throw new InvalidDataException(
-                    $"Răspuns neașteptat de la Broker: {response.Type}.");
-            }
-        }
-        catch (Exception exception) when (
-            exception is IOException
-            or SocketException
-            or JsonException
-            or InvalidDataException)
+        if (response.RelatedMessageId != message.MessageId)
         {
-            Console.WriteLine(
-                $"Comanda nu a fost confirmată: {exception.Message}");
+            throw new InvalidDataException(
+                "Răspunsul Brokerului nu corespunde mesajului trimis.");
         }
+
+        return response.Type switch
+        {
+            MessageType.Ack => new PublishResult(
+                true,
+                message.MessageId,
+                message.CorrelationId,
+                null),
+            MessageType.Nack => new PublishResult(
+                false,
+                message.MessageId,
+                message.CorrelationId,
+                response.Reason ?? "Brokerul a respins mesajul."),
+            _ => throw new InvalidDataException(
+                $"Răspuns neașteptat de la Broker: {response.Type}.")
+        };
+    }
+
+    public static string? ValidateOrder(OrderPayload order)
+    {
+        ArgumentNullException.ThrowIfNull(order);
+
+        if (string.IsNullOrWhiteSpace(order.OrderId)
+            || order.OrderId.Length > 64)
+        {
+            return "ID-ul comenzii trebuie să conțină între 1 și 64 de caractere.";
+        }
+
+        if (string.IsNullOrWhiteSpace(order.Product)
+            || order.Product.Length > 100)
+        {
+            return "Produsul trebuie să conțină între 1 și 100 de caractere.";
+        }
+
+        return order.Quantity is < 1 or > 1000
+            ? "Cantitatea trebuie să fie între 1 și 1000."
+            : null;
     }
 }
+
+public sealed record PublishResult(
+    bool Accepted,
+    Guid MessageId,
+    Guid CorrelationId,
+    string? Reason);

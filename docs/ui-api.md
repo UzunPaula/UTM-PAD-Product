@@ -20,14 +20,17 @@ Successful response:
 ```json
 {
   "brokerConnected": true,
-  "consumerConnected": true,
-  "pendingMessages": 0,
-  "deadLetterMessages": 0
+  "consumerConnected": null,
+  "pendingMessages": null,
+  "deadLetterMessages": null
 }
 ```
 
-The endpoint should return current process state. If the request fails, the
-interface displays the components as offline instead of inventing status data.
+The endpoint actively checks the TCP connection to the Broker. The current
+protocol does not expose Consumer presence, queue length, or dead-letter count,
+so those values are null and the interface displays them as unknown. If the
+request fails, the interface displays the components as offline instead of
+inventing status data.
 
 ### POST /api/orders
 
