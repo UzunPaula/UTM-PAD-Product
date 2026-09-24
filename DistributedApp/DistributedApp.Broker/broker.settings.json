@@ -1,0 +1,9 @@
+{
+  "port": 5000,
+  "stateFilePath": "data/broker-state.json",
+  "acknowledgementTimeoutMilliseconds": 3000,
+  "retryScanIntervalMilliseconds": 250,
+  "maxRetries": 3,
+  "baseRetryDelayMilliseconds": 100,
+  "maxRetryDelayMilliseconds": 2000
+}
