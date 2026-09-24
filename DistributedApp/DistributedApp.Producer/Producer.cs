@@ -64,14 +64,15 @@ public class Producer
             MessageId = Guid.NewGuid(),
             CorrelationId = Guid.NewGuid(),
             Topic = "orders",
-            SchemaVersion = "1.0",
+            Type = MessageType.Publish,
+            SchemaVersion = MessageSchema.CurrentVersion,
             SequenceNumber = 1,
             RetryCount = 0,
-            CreatedAt = DateTime.UtcNow,
+            OccurredAtUtc = DateTimeOffset.UtcNow,
             Payload = JsonSerializer.Serialize(orderPayload)
         };
 
-        string json = JsonSerializer.Serialize(message);
+        string json = MessageJson.Serialize(message);
 
         _tcpClient.Send(json);
 
