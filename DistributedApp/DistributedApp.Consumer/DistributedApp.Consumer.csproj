@@ -11,4 +11,10 @@
       <ProjectReference Include="..\DistributedApp.Contracts\DistributedApp.Contracts.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <None Update="consumer.settings.json">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
 </Project>
