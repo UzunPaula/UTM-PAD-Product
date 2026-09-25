@@ -8,5 +8,6 @@ public enum MessageType
     Ack,
     Nack,
     StatusRequest,
-    StatusResponse
+    StatusResponse,
+    RedriveRequest
 }

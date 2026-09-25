@@ -20,7 +20,16 @@ builder.Services.AddSingleton<Producer>();
 WebApplication app = builder.Build();
 
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        context.Context.Response.Headers.CacheControl =
+            "no-store, no-cache, must-revalidate";
+        context.Context.Response.Headers.Pragma = "no-cache";
+        context.Context.Response.Headers.Expires = "0";
+    }
+});
 
 app.MapGet(
     "/api/status",
@@ -134,6 +143,61 @@ app.MapPost(
         }
     });
 
+app.MapPost(
+    "/api/dead-letters/{messageId:guid}/redrive",
+    async (
+        Guid messageId,
+        TcpClientService tcpClient,
+        ILogger<Program> logger,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            Message response = await tcpClient.RedriveDeadLetterAsync(
+                "orders",
+                messageId,
+                cancellationToken);
+
+            if (response.Type == MessageType.Ack)
+            {
+                return Results.Ok(new
+                {
+                    redriven = true,
+                    messageId
+                });
+            }
+
+            return Results.NotFound(new
+            {
+                redriven = false,
+                messageId,
+                reason = response.Reason
+                    ?? "Mesajul nu mai există în dead-letter queue."
+            });
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or System.Net.Sockets.SocketException
+            or System.Text.Json.JsonException
+            or InvalidDataException
+            or TimeoutException)
+        {
+            logger.LogWarning(
+                exception,
+                "DLQ redrive failed for message {MessageId}.",
+                messageId);
+
+            return Results.Json(
+                new
+                {
+                    redriven = false,
+                    messageId,
+                    reason =
+                        "Brokerul nu este disponibil sau nu a răspuns corect."
+                },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    });
 app.MapFallbackToFile("index.html");
 
 app.Run();

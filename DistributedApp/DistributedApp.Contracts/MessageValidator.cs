@@ -82,6 +82,7 @@ public static class MessageValidator
     {
         return type is MessageType.Ack
             or MessageType.Nack
-            or MessageType.StatusResponse;
+            or MessageType.StatusResponse
+            or MessageType.RedriveRequest;
     }
 }

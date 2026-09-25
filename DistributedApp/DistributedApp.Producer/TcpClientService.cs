@@ -150,4 +150,41 @@ public sealed class TcpClientService
             new List<AcknowledgementSummary>();
         return status;
     }
-}
+
+    public async Task<Message> RedriveDeadLetterAsync(
+        string topic,
+        Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+
+        if (messageId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "Message ID cannot be empty.",
+                nameof(messageId));
+        }
+
+        Message request = new()
+        {
+            MessageId = Guid.NewGuid(),
+            CorrelationId = Guid.NewGuid(),
+            Type = MessageType.RedriveRequest,
+            SchemaVersion = MessageSchema.CurrentVersion,
+            OccurredAtUtc = DateTimeOffset.UtcNow,
+            Topic = topic,
+            RelatedMessageId = messageId
+        };
+
+        Message response = await SendAsync(request, cancellationToken);
+
+        if (response.Type is not (MessageType.Ack or MessageType.Nack)
+            || response.RelatedMessageId != request.MessageId
+            || response.CorrelationId != request.CorrelationId)
+        {
+            throw new InvalidDataException(
+                "Răspunsul Brokerului pentru redrive nu corespunde cererii.");
+        }
+
+        return response;
+    }}

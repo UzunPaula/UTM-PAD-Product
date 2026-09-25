@@ -5,5 +5,5 @@
   "stateFilePath": "data/consumer-state.json",
   "simulateCrashBeforeAcknowledgement": false,
   "processingDelayMilliseconds": 1200,
-  "simulateNack": true
+  "simulateNack": false
 }

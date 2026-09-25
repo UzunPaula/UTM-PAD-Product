@@ -199,6 +199,18 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .08em; text-transfor
 .table-state.error { color: var(--danger); }
 .message-id { max-width: 190px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .reason-cell { min-width: 210px; color: var(--muted); white-space: normal; }
+.redrive-button {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(61, 220, 151, .45);
+    border-radius: 9px;
+    color: #baf7d6;
+    background: rgba(61, 220, 151, .1);
+    font-weight: 800;
+    white-space: nowrap;
+}
+.redrive-button:hover { background: rgba(61, 220, 151, .18); }
+.redrive-button:disabled { cursor: wait; opacity: .6; }
 
 footer { padding: 22px; color: #718096; font-size: .78rem; text-align: center; }
 

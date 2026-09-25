@@ -168,6 +168,68 @@ public sealed class PersistentBrokerStore
         }
     }
 
+    public async Task<Message?> RedriveDeadLetterAsync(
+        string topic,
+        Guid messageId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+
+        if (messageId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "Message ID cannot be empty.",
+                nameof(messageId));
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+
+        try
+        {
+            int deadLetterIndex = _state.DeadLetters.FindIndex(
+                entry => entry.Message.MessageId == messageId
+                    && string.Equals(
+                        entry.Message.Topic,
+                        topic,
+                        StringComparison.Ordinal));
+
+            if (deadLetterIndex < 0)
+            {
+                return null;
+            }
+
+            DeadLetterMessage deadLetter =
+                _state.DeadLetters[deadLetterIndex];
+
+            if (!_state.Queues.TryGetValue(
+                    topic,
+                    out List<Message>? queue))
+            {
+                queue = new List<Message>();
+                _state.Queues[topic] = queue;
+            }
+
+            long sequenceNumber =
+                _state.NextSequenceNumbers.GetValueOrDefault(topic, 1);
+            Message redriven = Copy(deadLetter.Message);
+            redriven.Type = MessageType.Message;
+            redriven.SequenceNumber = sequenceNumber;
+            redriven.RetryCount = 0;
+            redriven.RelatedMessageId = null;
+            redriven.Reason = null;
+
+            _state.DeadLetters.RemoveAt(deadLetterIndex);
+            queue.Add(redriven);
+            _state.NextSequenceNumbers[topic] = sequenceNumber + 1;
+
+            await SaveAsync(cancellationToken);
+            return Copy(redriven);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
     public async Task<IReadOnlyList<DeadLetterMessage>> GetDeadLettersAsync(
         CancellationToken cancellationToken = default)
     {
