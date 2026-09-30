@@ -14,6 +14,7 @@ const elements = {
     result: document.querySelector("#submissionResult"),
     brokerState: document.querySelector("#brokerState"),
     consumerState: document.querySelector("#consumerState"),
+    topicLabel: document.querySelector("#topicLabel"),
     systemBadge: document.querySelector("#systemBadge"),
     systemBadgeText: document.querySelector("#systemBadgeText"),
     pendingCount: document.querySelector("#pendingCount"),
@@ -22,7 +23,6 @@ const elements = {
     deadLetterCount: document.querySelector("#deadLetterCount"),
     deadLetterListCount: document.querySelector("#deadLetterListCount"),
     deadLetterBody: document.querySelector("#deadLetterBody"),
-    lastUpdated: document.querySelector("#lastUpdated"),
     historyBody: document.querySelector("#historyBody"),
     historyCount: document.querySelector("#historyCount")
 };
@@ -205,13 +205,15 @@ async function refreshStatus() {
 
         const status = await response.json();
         renderSystemState(status.brokerConnected, status.consumerConnected);
+        elements.topicLabel.textContent = status.producerId || "Producer";
+        elements.consumerState.title = Array.isArray(status.consumerEndpoints) ? status.consumerEndpoints.join("\n") : "";
+        if (status.consumerConnected && status.consumerCount > 0) elements.consumerState.textContent = `Online (${status.consumerCount})`;
         elements.pendingCount.textContent = Number.isInteger(status.pendingMessages) ? status.pendingMessages : "—";
         elements.inFlightCount.textContent = Number.isInteger(status.inFlightMessages) ? status.inFlightMessages : "—";
         elements.acknowledgedCount.textContent = Number.isInteger(status.acknowledgedMessages) ? status.acknowledgedMessages : "—";
         elements.deadLetterCount.textContent = Number.isInteger(status.deadLetterMessages) ? status.deadLetterMessages : "—";
         renderDeadLetters(status.deadLetters);
         updateHistoryDeliveryStates(status);
-        elements.lastUpdated.textContent = new Date().toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit" });
     } catch {
         renderSystemState(false, false);
         elements.pendingCount.textContent = "—";
@@ -219,7 +221,6 @@ async function refreshStatus() {
         elements.acknowledgedCount.textContent = "—";
         elements.deadLetterCount.textContent = "—";
         renderDeadLetters([]);
-        elements.lastUpdated.textContent = "Backend indisponibil";
     } finally {
         statusRefreshInProgress = false;
         elements.refreshButton.disabled = false;

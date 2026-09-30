@@ -1,925 +1,450 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using System.Text.Json;
+using System.Text;
 using DistributedApp.Contracts;
 
 namespace DistributedApp.Broker;
 
 public sealed class BrokerServer
 {
-    private static readonly JsonSerializerOptions StatusJsonOptions =
-        new(JsonSerializerDefaults.Web);
-
-    private readonly BrokerSettings _settings;
-    private readonly PersistentBrokerStore _store;
+    private const int MaxRetries = 3;
+    private static readonly TimeSpan AckTimeout = TimeSpan.FromSeconds(2);
+    private readonly object _sync = new();
     private readonly TcpListener _listener;
-    private readonly ConcurrentDictionary<string, BrokerClientConnection>
-        _subscribers = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, InFlightDelivery>
-        _inFlight = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim>
-        _topicLocks = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, byte> _knownTopics =
-        new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, DateTimeOffset>
-        _pendingRetryAt = new(StringComparer.Ordinal);
-    private readonly BrokerDispatchThread _dispatchThread;
+    private readonly string _stateFile = Path.Combine(AppContext.BaseDirectory, "broker-state.json");
+    private readonly Dictionary<string, ConsumerConnection> _onlineConsumers = [];
+    private readonly ConcurrentQueue<RedriveRequest> _redriveRequests = new();
+    private BrokerState _state;
+    private bool _running;
+    private Thread? _deliveryThread;
 
-    public BrokerServer(
-        BrokerSettings settings,
-        PersistentBrokerStore store)
+    public BrokerServer(int port)
     {
-        _settings = settings;
-        _store = store;
-        _listener = new TcpListener(IPAddress.Any, settings.Port);
-        _dispatchThread = new BrokerDispatchThread(
-            TryDispatchAsync,
-            _store.RedriveDeadLetterAsync);
+        _listener = new TcpListener(IPAddress.Any, port);
+        _state = LoadState();
     }
-
-    public int BoundPort =>
-        _listener.LocalEndpoint is IPEndPoint endpoint
-            ? endpoint.Port
-            : 0;
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         _listener.Start();
-        BrokerLog.Write(
-            "Information",
-            "broker_started",
-            "listening",
-            detail: $"port={BoundPort}");
-
-        Task timeoutMonitor = MonitorTimeoutsAsync(cancellationToken);
-        _dispatchThread.Start(cancellationToken);
+        _running = true;
+        _deliveryThread = new Thread(DeliveryLoop)
+        {
+            IsBackground = true,
+            Name = "BrokerDeliveryThread"
+        };
+        _deliveryThread.Start();
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                TcpClient client;
-
-                try
-                {
-                    client = await _listener.AcceptTcpClientAsync(
-                        cancellationToken);
-                }
-                catch (OperationCanceledException)
-                    when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-
+                TcpClient client = await _listener.AcceptTcpClientAsync(cancellationToken);
                 _ = HandleClientAsync(client, cancellationToken);
             }
         }
+        catch (OperationCanceledException) { }
         finally
         {
+            _running = false;
             _listener.Stop();
-            _dispatchThread.Stop();
-
-            try
-            {
-                await timeoutMonitor;
-            }
-            catch (OperationCanceledException)
-                when (cancellationToken.IsCancellationRequested)
-            {
-            }
-
-            BrokerLog.Write(
-                "Information",
-                "broker_stopped",
-                "success");
+            _deliveryThread.Join();
         }
     }
 
-    private async Task HandleClientAsync(
-        TcpClient client,
-        CancellationToken cancellationToken)
+    private async Task HandleClientAsync(TcpClient client, CancellationToken token)
     {
-        await using BrokerClientConnection connection = new(client);
-        HashSet<string> subscriptions = new(StringComparer.Ordinal);
+        ConsumerConnection connection = new(client);
+        string? registeredConsumer = null;
+        Console.WriteLine($"CONNECT: {connection.RemoteEndpoint}");
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
-                string? line = await connection.Reader.ReadLineAsync(
-                    cancellationToken);
+                string? line = await connection.Reader.ReadLineAsync(token);
+                if (line is null) break;
 
-                if (line == null)
+                Message message = MessageJson.Deserialize<Message>(line);
+                switch (message.Type)
                 {
-                    break;
+                    case MessageType.Publish:
+                        Publish(message);
+                        await connection.SendAsync(Reply(message, MessageType.Ack), token);
+                        break;
+
+                    case MessageType.Subscribe:
+                        registeredConsumer = Subscribe(message, connection);
+                        break;
+
+                    case MessageType.Ack:
+                        CompleteDelivery(message, true);
+                        break;
+
+                    case MessageType.Nack:
+                        CompleteDelivery(message, false);
+                        break;
+
+                    case MessageType.StatusRequest:
+                        await connection.SendAsync(StatusReply(message), token);
+                        break;
+
+                    case MessageType.RedriveRequest:
+                        bool redriven = await RedriveAsync(message, token);
+                        await connection.SendAsync(
+                            Reply(message, redriven ? MessageType.Ack : MessageType.Nack,
+                                redriven ? null : "Consumer offline or message not found."),
+                            token);
+                        break;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or SocketException or OperationCanceledException)
+        {
+            Console.WriteLine($"DISCONNECT: {connection.RemoteEndpoint}");
+        }
+        finally
+        {
+            if (registeredConsumer is not null)
+            {
+                lock (_sync)
+                {
+                    if (_onlineConsumers.TryGetValue(registeredConsumer, out ConsumerConnection? current)
+                        && ReferenceEquals(current, connection))
+                        _onlineConsumers.Remove(registeredConsumer);
+                }
+            }
+            connection.Dispose();
+        }
+    }
+
+    private void Publish(Message message)
+    {
+        if (string.IsNullOrWhiteSpace(message.SenderId))
+            message.SenderId = "producer-" + Guid.NewGuid().ToString("N")[..8];
+
+        lock (_sync)
+        {
+            _state.PublishedMessages.Add(message);
+            foreach (Subscription subscription in _state.Subscriptions.Where(x => x.Topic == message.Topic))
+                AddDeliveryIfMissing(message, subscription.ConsumerId);
+            SaveState();
+        }
+
+        Console.WriteLine($"PUBLISH: {message.MessageId} from {message.SenderId}");
+    }
+
+    private string Subscribe(Message message, ConsumerConnection connection)
+    {
+        string consumerId = string.IsNullOrWhiteSpace(message.SenderId)
+            ? "consumer-" + Guid.NewGuid().ToString("N")[..8]
+            : message.SenderId;
+
+        lock (_sync)
+        {
+            _onlineConsumers[consumerId] = connection;
+            if (!_state.Subscriptions.Any(x => x.ConsumerId == consumerId && x.Topic == message.Topic))
+                _state.Subscriptions.Add(new Subscription { ConsumerId = consumerId, Topic = message.Topic });
+
+            foreach (Message published in _state.PublishedMessages.Where(x => x.Topic == message.Topic))
+                AddDeliveryIfMissing(published, consumerId);
+            SaveState();
+        }
+
+        Console.WriteLine($"SUBSCRIBE: {consumerId} -> {message.Topic} at {connection.RemoteEndpoint}");
+        return consumerId;
+    }
+
+    private void AddDeliveryIfMissing(Message message, string consumerId)
+    {
+        if (_state.Deliveries.Any(x => x.Message.MessageId == message.MessageId && x.ConsumerId == consumerId))
+            return;
+
+        _state.Deliveries.Add(new Delivery
+        {
+            Message = message,
+            ConsumerId = consumerId,
+            Status = DeliveryStatus.Pending,
+            NextAttemptUtc = DateTimeOffset.UtcNow
+        });
+    }
+
+    private void DeliveryLoop()
+    {
+        Console.WriteLine($"THREAD: {_deliveryThread?.ManagedThreadId} started");
+
+        while (_running)
+        {
+            ProcessRedriveRequests();
+            List<(Delivery Delivery, ConsumerConnection Connection)> toSend = [];
+
+            lock (_sync)
+            {
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+
+                foreach (Delivery delivery in _state.Deliveries.Where(x =>
+                             x.Status == DeliveryStatus.WaitingAck && now - x.SentAtUtc >= AckTimeout).ToList())
+                    Fail(delivery, "ACK timeout.");
+
+                foreach (Delivery delivery in _state.Deliveries.Where(x =>
+                             x.Status == DeliveryStatus.Pending && x.NextAttemptUtc <= now).ToList())
+                {
+                    if (_onlineConsumers.TryGetValue(delivery.ConsumerId, out ConsumerConnection? consumer))
+                    {
+                        delivery.Status = DeliveryStatus.WaitingAck;
+                        delivery.SentAtUtc = now;
+                        toSend.Add((delivery, consumer));
+                    }
+                    else
+                    {
+                        Fail(delivery, "Consumer offline.");
+                    }
                 }
 
-                Message message;
+                if (toSend.Count > 0) SaveState();
+            }
 
+            foreach ((Delivery delivery, ConsumerConnection consumer) in toSend)
+            {
                 try
                 {
-                    message = MessageJson.Deserialize(line);
+                    Message copy = new()
+                    {
+                        MessageId = delivery.Message.MessageId,
+                        CorrelationId = delivery.Message.CorrelationId,
+                        Type = MessageType.Delivery,
+                        SenderId = delivery.Message.SenderId,
+                        Topic = delivery.Message.Topic,
+                        Payload = delivery.Message.Payload
+                    };
+                    consumer.Send(copy);
+                    Console.WriteLine($"DELIVER: {copy.MessageId} -> {delivery.ConsumerId}");
                 }
-                catch (JsonException exception)
+                catch (IOException)
                 {
-                    BrokerLog.Write(
-                        "Warning",
-                        "message_rejected",
-                        "invalid_json",
-                        detail: exception.Message);
-                    continue;
-                }
-
-                await ProcessMessageAsync(
-                    connection,
-                    subscriptions,
-                    message,
-                    cancellationToken);
-            }
-        }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (IOException exception)
-        {
-            BrokerLog.Write(
-                "Warning",
-                "client_disconnected",
-                "io_error",
-                detail: exception.Message);
-        }
-        finally
-        {
-            foreach (string topic in subscriptions)
-            {
-                _subscribers.TryRemove(
-                    new KeyValuePair<string, BrokerClientConnection>(
-                        topic,
-                        connection));
-
-                if (!cancellationToken.IsCancellationRequested)
-                {
-                    await FailInFlightAsync(
-                        topic,
-                        "Consumer disconnected before acknowledgement.",
-                        cancellationToken);
-                }
-            }
-        }
-    }
-
-    private async Task ProcessMessageAsync(
-        BrokerClientConnection connection,
-        HashSet<string> subscriptions,
-        Message message,
-        CancellationToken cancellationToken)
-    {
-        MessageValidationResult validation = MessageValidator.Validate(message);
-
-        if (!validation.IsValid)
-        {
-            BrokerLog.Write(
-                "Warning",
-                "message_rejected",
-                "invalid_contract",
-                message,
-                string.Join(", ", validation.Errors));
-            return;
-        }
-
-        switch (message.Type)
-        {
-            case MessageType.Publish:
-                _knownTopics.TryAdd(message.Topic, 0);
-                Message delivery = await _store.EnqueueAsync(
-                    message,
-                    cancellationToken);
-                await connection.SendAsync(
-                    CreateResponse(message, MessageType.Ack, null),
-                    cancellationToken);
-                BrokerLog.Write(
-                    "Information",
-                    "message_enqueued",
-                    "accepted",
-                    delivery);
-                _dispatchThread.RequestDispatch(message.Topic);
-                break;
-
-            case MessageType.Subscribe:
-                _knownTopics.TryAdd(message.Topic, 0);
-                _pendingRetryAt.TryRemove(message.Topic, out _);
-                _subscribers[message.Topic] = connection;
-                subscriptions.Add(message.Topic);
-                BrokerLog.Write(
-                    "Information",
-                    "consumer_subscribed",
-                    "success",
-                    message);
-                _dispatchThread.RequestDispatch(message.Topic);
-                break;
-
-            case MessageType.Ack:
-                await HandleAcknowledgementAsync(
-                    message,
-                    cancellationToken);
-                break;
-
-            case MessageType.Nack:
-                await FailInFlightAsync(
-                    message.Topic,
-                    message.Reason ?? "Consumer returned Nack.",
-                    cancellationToken,
-                    message.RelatedMessageId);
-                break;
-
-            case MessageType.RedriveRequest:
-                await HandleRedriveAsync(
-                    connection,
-                    message,
-                    cancellationToken);
-                break;
-            case MessageType.StatusRequest:
-                _knownTopics.TryAdd(message.Topic, 0);
-                await SendStatusAsync(
-                    connection,
-                    message,
-                    cancellationToken);
-                break;
-
-            default:
-                BrokerLog.Write(
-                    "Warning",
-                    "message_rejected",
-                    "unsupported_type",
-                    message);
-                break;
-        }
-    }
-
-    private async Task HandleRedriveAsync(
-        BrokerClientConnection connection,
-        Message request,
-        CancellationToken cancellationToken)
-    {
-        Guid messageId = request.RelatedMessageId!.Value;
-
-        if (!_subscribers.ContainsKey(request.Topic))
-        {
-            await connection.SendAsync(
-                CreateResponse(
-                    request,
-                    MessageType.Nack,
-                    "Consumerul trebuie pornit înainte de redrive."),
-                cancellationToken);
-            BrokerLog.Write(
-                "Warning",
-                "dead_letter_redrive_rejected",
-                "consumer_offline",
-                request,
-                detail: $"deadLetterMessageId={messageId}");
-            return;
-        }
-
-        Message? redriven = await _dispatchThread.RedriveAsync(
-            request.Topic,
-            messageId,
-            cancellationToken);
-
-        bool succeeded = redriven != null;
-        await connection.SendAsync(
-            CreateResponse(
-                request,
-                succeeded ? MessageType.Ack : MessageType.Nack,
-                succeeded
-                    ? null
-                    : "Mesajul nu a fost găsit în dead-letter queue."),
-            cancellationToken);
-
-        BrokerLog.Write(
-            succeeded ? "Information" : "Warning",
-            "dead_letter_redrive_requested",
-            succeeded ? "requeued" : "not_found",
-            request,
-            detail: $"deadLetterMessageId={messageId}");
-    }
-    private async Task SendStatusAsync(
-        BrokerClientConnection connection,
-        Message request,
-        CancellationToken cancellationToken)
-    {
-        BrokerStoreSnapshot storeSnapshot =
-            await _store.GetSnapshotAsync(
-                request.Topic,
-                cancellationToken);
-        int inFlightMessages = _inFlight.ContainsKey(request.Topic)
-            ? 1
-            : 0;
-        BrokerStatusSnapshot status = new()
-        {
-            Topic = request.Topic,
-            ConsumerConnected = _subscribers.ContainsKey(request.Topic),
-            PendingMessages = Math.Max(
-                0,
-                storeSnapshot.QueuedMessages - inFlightMessages),
-            InFlightMessages = inFlightMessages,
-            DeadLetterMessages = storeSnapshot.DeadLetters.Count,
-            AcknowledgedMessages = storeSnapshot.AcknowledgedMessages,
-            RecentAcknowledgements = storeSnapshot.RecentAcknowledgements
-                .OrderByDescending(entry => entry.AcknowledgedAtUtc)
-                .Select(entry => new AcknowledgementSummary
-                {
-                    MessageId = entry.MessageId,
-                    CorrelationId = entry.CorrelationId,
-                    Topic = entry.Topic,
-                    AcknowledgedAtUtc = entry.AcknowledgedAtUtc
-                })
-                .ToList(),
-            DeadLetters = storeSnapshot.DeadLetters
-                .OrderByDescending(entry => entry.DeadLetteredAtUtc)
-                .Select(entry => new DeadLetterSummary
-                {
-                    MessageId = entry.Message.MessageId,
-                    CorrelationId = entry.Message.CorrelationId,
-                    Topic = entry.Message.Topic,
-                    RetryCount = entry.Message.RetryCount,
-                    Reason = entry.Reason,
-                    DeadLetteredAtUtc = entry.DeadLetteredAtUtc
-                })
-                .ToList(),
-            ObservedAtUtc = DateTimeOffset.UtcNow
-        };
-        string payload = JsonSerializer.Serialize(
-            status,
-            StatusJsonOptions);
-
-        await connection.SendAsync(
-            CreateResponse(
-                request,
-                MessageType.StatusResponse,
-                null,
-                payload),
-            cancellationToken);
-    }
-
-    private async Task HandleAcknowledgementAsync(
-        Message acknowledgement,
-        CancellationToken cancellationToken)
-    {
-        string topic = acknowledgement.Topic;
-        SemaphoreSlim topicLock = GetTopicLock(topic);
-        await topicLock.WaitAsync(cancellationToken);
-
-        try
-        {
-            if (!_inFlight.TryGetValue(
-                    topic,
-                    out InFlightDelivery? active)
-                || acknowledgement.RelatedMessageId != active.MessageId)
-            {
-                BrokerLog.Write(
-                    "Warning",
-                    "ack_ignored",
-                    "not_in_flight",
-                    acknowledgement);
-                return;
-            }
-
-            bool removed = await _store.AcknowledgeAsync(
-                topic,
-                active.MessageId,
-                cancellationToken);
-            _inFlight.TryRemove(topic, out _);
-
-            BrokerLog.Write(
-                removed ? "Information" : "Warning",
-                "ack_received",
-                removed ? "completed" : "not_found",
-                acknowledgement);
-        }
-        finally
-        {
-            topicLock.Release();
-        }
-
-        _dispatchThread.RequestDispatch(topic);
-    }
-
-    private async Task FailInFlightAsync(
-        string topic,
-        string reason,
-        CancellationToken cancellationToken,
-        Guid? expectedMessageId = null)
-    {
-        SemaphoreSlim topicLock = GetTopicLock(topic);
-        TimeSpan? retryDelay = null;
-        await topicLock.WaitAsync(cancellationToken);
-
-        try
-        {
-            if (!_inFlight.TryGetValue(topic, out InFlightDelivery? active)
-                || (expectedMessageId.HasValue
-                    && expectedMessageId.Value != active.MessageId))
-            {
-                return;
-            }
-
-            _inFlight.TryRemove(topic, out _);
-            DeliveryFailureStatus status =
-                await _store.RecordFailureAsync(
-                    topic,
-                    active.MessageId,
-                    reason,
-                    _settings.MaxRetries,
-                    cancellationToken);
-
-            BrokerLog.Write(
-                status == DeliveryFailureStatus.DeadLettered
-                    ? "Error"
-                    : "Warning",
-                status == DeliveryFailureStatus.DeadLettered
-                    ? "message_dead_lettered"
-                    : "message_retry_scheduled",
-                status.ToString(),
-                detail: $"messageId={active.MessageId}; reason={reason}");
-
-            if (status == DeliveryFailureStatus.Retrying)
-            {
-                Message? retry = await _store.PeekAsync(
-                    topic,
-                    cancellationToken);
-
-                if (retry != null)
-                {
-                    retryDelay = CalculateRetryDelay(retry.RetryCount);
-                }
-            }
-        }
-        finally
-        {
-            topicLock.Release();
-        }
-
-        // Waiting outside the topic lock allows acknowledgements and new
-        // subscribers to be handled while this retry is backed off.
-        if (retryDelay.HasValue)
-        {
-            await Task.Delay(retryDelay.Value, cancellationToken);
-        }
-
-        _dispatchThread.RequestDispatch(topic);
-    }
-
-    private async Task TryDispatchAsync(
-        string topic,
-        CancellationToken cancellationToken)
-    {
-        SemaphoreSlim topicLock = GetTopicLock(topic);
-        await topicLock.WaitAsync(cancellationToken);
-
-        try
-        {
-            if (_inFlight.ContainsKey(topic)
-                || !_subscribers.TryGetValue(
-                    topic,
-                    out BrokerClientConnection? subscriber))
-            {
-                return;
-            }
-
-            Message? message = await _store.PeekAsync(
-                topic,
-                cancellationToken);
-
-            if (message == null)
-            {
-                return;
-            }
-
-            _inFlight[topic] = new InFlightDelivery(
-                message.MessageId,
-                DateTimeOffset.UtcNow);
-
-            try
-            {
-                await subscriber.SendAsync(message, cancellationToken);
-                BrokerLog.Write(
-                    "Information",
-                    "message_dispatched",
-                    "awaiting_ack",
-                    message);
-            }
-            catch (IOException)
-            {
-                _inFlight.TryRemove(topic, out _);
-                _subscribers.TryRemove(
-                    new KeyValuePair<string, BrokerClientConnection>(
-                        topic,
-                        subscriber));
-                await _store.RecordFailureAsync(
-                    topic,
-                    message.MessageId,
-                    "Delivery connection failed.",
-                    _settings.MaxRetries,
-                    cancellationToken);
-            }
-        }
-        finally
-        {
-            topicLock.Release();
-        }
-    }
-
-    private async Task MonitorTimeoutsAsync(
-        CancellationToken cancellationToken)
-    {
-        using PeriodicTimer timer = new(
-            TimeSpan.FromMilliseconds(
-                _settings.RetryScanIntervalMilliseconds));
-
-        while (await timer.WaitForNextTickAsync(cancellationToken))
-        {
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-
-            foreach ((string topic, InFlightDelivery delivery) in _inFlight)
-            {
-                if ((now - delivery.SentAtUtc).TotalMilliseconds
-                    >= _settings.AcknowledgementTimeoutMilliseconds)
-                {
-                    await FailInFlightAsync(
-                        topic,
-                        "Acknowledgement timeout.",
-                        cancellationToken,
-                        delivery.MessageId);
+                    lock (_sync) Fail(delivery, "TCP connection lost.");
                 }
             }
 
-            await MonitorPendingWithoutConsumerAsync(
-                now,
-                cancellationToken);
+            Thread.Sleep(100);
         }
     }
 
-    private async Task MonitorPendingWithoutConsumerAsync(
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
+    private void CompleteDelivery(Message response, bool accepted)
     {
-        foreach (string topic in _knownTopics.Keys)
+        if (response.RelatedMessageId is null) return;
+
+        lock (_sync)
         {
-            if (_subscribers.ContainsKey(topic)
-                || _inFlight.ContainsKey(topic))
+            Delivery? delivery = _state.Deliveries.FirstOrDefault(x =>
+                x.Message.MessageId == response.RelatedMessageId
+                && x.ConsumerId == response.SenderId
+                && x.Status == DeliveryStatus.WaitingAck);
+            if (delivery is null) return;
+
+            if (accepted)
             {
-                _pendingRetryAt.TryRemove(topic, out _);
-                continue;
-            }
-
-            Message? pending = await _store.PeekAsync(
-                topic,
-                cancellationToken);
-
-            if (pending == null)
-            {
-                _pendingRetryAt.TryRemove(topic, out _);
-                continue;
-            }
-
-            DateTimeOffset retryAt = _pendingRetryAt.GetOrAdd(
-                topic,
-                now.AddMilliseconds(
-                    _settings.AcknowledgementTimeoutMilliseconds));
-
-            if (now >= retryAt)
-            {
-                await FailPendingWithoutConsumerAsync(
-                    topic,
-                    now,
-                    cancellationToken);
-            }
-        }
-    }
-
-    private async Task FailPendingWithoutConsumerAsync(
-        string topic,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        SemaphoreSlim topicLock = GetTopicLock(topic);
-        await topicLock.WaitAsync(cancellationToken);
-
-        try
-        {
-            if (_subscribers.ContainsKey(topic)
-                || _inFlight.ContainsKey(topic))
-            {
-                _pendingRetryAt.TryRemove(topic, out _);
-                return;
-            }
-
-            Message? pending = await _store.PeekAsync(
-                topic,
-                cancellationToken);
-
-            if (pending == null)
-            {
-                _pendingRetryAt.TryRemove(topic, out _);
-                return;
-            }
-
-            DeliveryFailureStatus status =
-                await _store.RecordFailureAsync(
-                    topic,
-                    pending.MessageId,
-                    "No consumer connected.",
-                    _settings.MaxRetries,
-                    cancellationToken);
-
-            BrokerLog.Write(
-                status == DeliveryFailureStatus.DeadLettered
-                    ? "Error"
-                    : "Warning",
-                status == DeliveryFailureStatus.DeadLettered
-                    ? "message_dead_lettered"
-                    : "message_retry_scheduled",
-                status.ToString(),
-                pending,
-                "No consumer connected.");
-
-            Message? next = await _store.PeekAsync(
-                topic,
-                cancellationToken);
-
-            if (next == null)
-            {
-                _pendingRetryAt.TryRemove(topic, out _);
-            }
-            else if (status == DeliveryFailureStatus.Retrying)
-            {
-                _pendingRetryAt[topic] =
-                    now.Add(CalculateRetryDelay(next.RetryCount));
+                delivery.Status = DeliveryStatus.Acknowledged;
+                _state.Acknowledgements.Add(new AcknowledgementInfo
+                {
+                    MessageId = delivery.Message.MessageId,
+                    CorrelationId = delivery.Message.CorrelationId,
+                    ConsumerId = delivery.ConsumerId,
+                    AcknowledgedAtUtc = DateTimeOffset.UtcNow
+                });
+                Console.WriteLine($"ACK: {delivery.Message.MessageId} from {delivery.ConsumerId}");
             }
             else
             {
-                _pendingRetryAt[topic] = now.AddMilliseconds(
-                    _settings.AcknowledgementTimeoutMilliseconds);
+                Fail(delivery, response.Reason ?? "Consumer returned NACK.");
             }
-        }
-        finally
-        {
-            topicLock.Release();
+            SaveState();
         }
     }
-    private SemaphoreSlim GetTopicLock(string topic)
-    {
-        return _topicLocks.GetOrAdd(topic, _ => new SemaphoreSlim(1, 1));
-    }
 
-    private TimeSpan CalculateRetryDelay(int retryCount)
+    private void Fail(Delivery delivery, string reason)
     {
-        int exponent = Math.Clamp(retryCount - 1, 0, 20);
-        double exponentialDelay =
-            _settings.BaseRetryDelayMilliseconds * Math.Pow(2, exponent);
-        int cappedDelay = (int)Math.Min(
-            exponentialDelay,
-            _settings.MaxRetryDelayMilliseconds);
-        int jitter = Random.Shared.Next(
-            0,
-            Math.Max(2, cappedDelay / 4));
+        delivery.RetryCount++;
+        delivery.Reason = reason;
 
-        return TimeSpan.FromMilliseconds(cappedDelay + jitter);
-    }
-
-    private static Message CreateResponse(
-        Message incoming,
-        MessageType type,
-        string? reason,
-        string payload = "")
-    {
-        return new Message
+        if (delivery.RetryCount >= MaxRetries)
         {
-            MessageId = Guid.NewGuid(),
-            CorrelationId = incoming.CorrelationId,
-            Type = type,
-            SchemaVersion = MessageSchema.CurrentVersion,
-            OccurredAtUtc = DateTimeOffset.UtcNow,
-            Topic = incoming.Topic,
-            SequenceNumber = incoming.SequenceNumber,
-            RetryCount = 0,
-            Payload = payload,
-            RelatedMessageId = incoming.MessageId,
-            Reason = reason
-        };
+            delivery.Status = DeliveryStatus.DeadLetter;
+            delivery.DeadLetteredAtUtc = DateTimeOffset.UtcNow;
+            Console.WriteLine($"DLQ: {delivery.Message.MessageId} for {delivery.ConsumerId}");
+        }
+        else
+        {
+            delivery.Status = DeliveryStatus.Pending;
+            delivery.NextAttemptUtc = DateTimeOffset.UtcNow.AddMilliseconds(500);
+        }
+        SaveState();
+    }
+
+    private Task<bool> RedriveAsync(Message request, CancellationToken token)
+    {
+        TaskCompletionSource<bool> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _redriveRequests.Enqueue(new RedriveRequest(request.RelatedMessageId, completion));
+        return completion.Task.WaitAsync(token);
+    }
+
+    private void ProcessRedriveRequests()
+    {
+        while (_redriveRequests.TryDequeue(out RedriveRequest? request))
+        {
+            bool success = false;
+            lock (_sync)
+            {
+                Delivery? delivery = _state.Deliveries.FirstOrDefault(x =>
+                    x.Message.MessageId == request.MessageId
+                    && x.Status == DeliveryStatus.DeadLetter
+                    && _onlineConsumers.ContainsKey(x.ConsumerId));
+
+                if (delivery is not null)
+                {
+                    delivery.Status = DeliveryStatus.Pending;
+                    delivery.RetryCount = 0;
+                    delivery.Reason = string.Empty;
+                    delivery.NextAttemptUtc = DateTimeOffset.UtcNow;
+                    delivery.DeadLetteredAtUtc = null;
+                    SaveState();
+                    success = true;
+                    Console.WriteLine($"REDRIVE by thread {_deliveryThread?.ManagedThreadId}: {delivery.Message.MessageId}");
+                }
+            }
+            request.Completion.SetResult(success);
+        }
+    }
+
+    private Message StatusReply(Message request)
+    {
+        BrokerStatus status;
+        lock (_sync)
+        {
+            List<Delivery> topicDeliveries = _state.Deliveries.Where(x => x.Message.Topic == request.Topic).ToList();
+            HashSet<string> topicConsumers = _state.Subscriptions
+                .Where(x => x.Topic == request.Topic && _onlineConsumers.ContainsKey(x.ConsumerId))
+                .Select(x => x.ConsumerId)
+                .ToHashSet();
+            status = new BrokerStatus
+            {
+                ConsumerConnected = topicConsumers.Count > 0,
+                ConsumerCount = topicConsumers.Count,
+                PendingMessages = topicDeliveries.Count(x => x.Status == DeliveryStatus.Pending),
+                InFlightMessages = topicDeliveries.Count(x => x.Status == DeliveryStatus.WaitingAck),
+                DeadLetterMessages = topicDeliveries.Count(x => x.Status == DeliveryStatus.DeadLetter),
+                AcknowledgedMessages = topicDeliveries.Count(x => x.Status == DeliveryStatus.Acknowledged),
+                ConsumerEndpoints = topicConsumers.Select(id => $"{id} = {_onlineConsumers[id].RemoteEndpoint}").ToList(),
+                RecentAcknowledgements = _state.Acknowledgements.TakeLast(20).ToList(),
+                DeadLetters = topicDeliveries.Where(x => x.Status == DeliveryStatus.DeadLetter).Select(x => new DeadLetterInfo
+                {
+                    MessageId = x.Message.MessageId,
+                    CorrelationId = x.Message.CorrelationId,
+                    Topic = x.Message.Topic,
+                    ConsumerId = x.ConsumerId,
+                    RetryCount = x.RetryCount,
+                    Reason = x.Reason,
+                    DeadLetteredAtUtc = x.DeadLetteredAtUtc ?? DateTimeOffset.UtcNow
+                }).ToList()
+            };
+        }
+
+        Message reply = Reply(request, MessageType.StatusResponse);
+        reply.Payload = MessageJson.Serialize(status);
+        return reply;
+    }
+
+    private static Message Reply(Message request, MessageType type, string? reason = null) => new()
+    {
+        Type = type,
+        SenderId = "broker",
+        Topic = request.Topic,
+        CorrelationId = request.CorrelationId,
+        RelatedMessageId = request.MessageId,
+        Reason = reason
+    };
+
+    private BrokerState LoadState()
+    {
+        try
+        {
+            return File.Exists(_stateFile)
+                ? MessageJson.Deserialize<BrokerState>(File.ReadAllText(_stateFile))
+                : new BrokerState();
+        }
+        catch
+        {
+            return new BrokerState();
+        }
+    }
+
+    private void SaveState()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_stateFile)!);
+        File.WriteAllText(_stateFile, MessageJson.Serialize(_state));
     }
 }
-internal sealed class BrokerDispatchThread
+
+internal sealed class ConsumerConnection : IDisposable
 {
-    private readonly BlockingCollection<BrokerThreadWorkItem> _workItems =
-        new();
-    private readonly ConcurrentDictionary<string, byte> _scheduledTopics =
-        new(StringComparer.Ordinal);
-    private readonly Func<string, CancellationToken, Task> _dispatchAsync;
-    private readonly Func<string, Guid, CancellationToken, Task<Message?>>
-        _redriveAsync;
-    private Thread? _thread;
+    private readonly TcpClient _client;
+    private readonly StreamWriter _writer;
+    private readonly object _sendLock = new();
 
-    public BrokerDispatchThread(
-        Func<string, CancellationToken, Task> dispatchAsync,
-        Func<string, Guid, CancellationToken, Task<Message?>> redriveAsync)
+    public ConsumerConnection(TcpClient client)
     {
-        _dispatchAsync = dispatchAsync
-            ?? throw new ArgumentNullException(nameof(dispatchAsync));
-        _redriveAsync = redriveAsync
-            ?? throw new ArgumentNullException(nameof(redriveAsync));
+        _client = client;
+        RemoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+        NetworkStream stream = client.GetStream();
+        Reader = new StreamReader(stream, Encoding.UTF8, false, leaveOpen: true);
+        _writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
     }
 
-    public void Start(CancellationToken cancellationToken)
+    public string RemoteEndpoint { get; }
+    public StreamReader Reader { get; }
+    public void Send(Message message)
     {
-        if (_thread != null)
-        {
-            throw new InvalidOperationException(
-                "The Broker dispatch thread is already running.");
-        }
-
-        _thread = new Thread(() => Run(cancellationToken))
-        {
-            IsBackground = true,
-            Name = "BrokerQueueDispatcher"
-        };
-        _thread.Start();
+        lock (_sendLock) _writer.WriteLine(MessageJson.Serialize(message));
     }
-
-    public void RequestDispatch(string topic)
+    public Task SendAsync(Message message, CancellationToken token)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
-
-        if (_workItems.IsAddingCompleted
-            || !_scheduledTopics.TryAdd(topic, 0))
-        {
-            return;
-        }
-
-        try
-        {
-            _workItems.Add(new BrokerThreadWorkItem(topic));
-        }
-        catch (InvalidOperationException)
-        {
-            _scheduledTopics.TryRemove(topic, out _);
-        }
+        lock (_sendLock) _writer.WriteLine(MessageJson.Serialize(message));
+        return Task.CompletedTask;
     }
-
-    public Task<Message?> RedriveAsync(
-        string topic,
-        Guid messageId,
-        CancellationToken cancellationToken)
+    public void Dispose()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
-
-        if (messageId == Guid.Empty)
-        {
-            throw new ArgumentException(
-                "Message ID cannot be empty.",
-                nameof(messageId));
-        }
-
-        TaskCompletionSource<Message?> completion = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        try
-        {
-            _workItems.Add(
-                new BrokerThreadWorkItem(
-                    topic,
-                    messageId,
-                    completion),
-                cancellationToken);
-        }
-        catch (InvalidOperationException)
-        {
-            completion.TrySetException(
-                new InvalidOperationException(
-                    "The Broker dispatch thread is stopping."));
-        }
-
-        return completion.Task.WaitAsync(cancellationToken);
+        Reader.Dispose();
+        _writer.Dispose();
+        _client.Dispose();
     }
-
-    public void Stop()
-    {
-        _workItems.CompleteAdding();
-
-        if (_thread is { IsAlive: true }
-            && Thread.CurrentThread != _thread)
-        {
-            _thread.Join();
-        }
-    }
-
-    private void Run(CancellationToken cancellationToken)
-    {
-        BrokerLog.Write(
-            "Information",
-            "dispatcher_thread_started",
-            "running",
-            detail: $"threadId={Environment.CurrentManagedThreadId}");
-
-        try
-        {
-            foreach (BrokerThreadWorkItem workItem in
-                     _workItems.GetConsumingEnumerable(cancellationToken))
-            {
-                if (workItem.DeadLetterMessageId.HasValue)
-                {
-                    RedriveDeadLetter(workItem, cancellationToken);
-                }
-                else
-                {
-                    DispatchTopic(workItem.Topic, cancellationToken);
-                }
-            }
-        }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            BrokerLog.Write(
-                "Information",
-                "dispatcher_thread_stopped",
-                "completed",
-                detail: $"threadId={Environment.CurrentManagedThreadId}");
-        }
-    }
-
-    private void DispatchTopic(
-        string topic,
-        CancellationToken cancellationToken)
-    {
-        _scheduledTopics.TryRemove(topic, out _);
-
-        try
-        {
-            _dispatchAsync(topic, cancellationToken)
-                .GetAwaiter()
-                .GetResult();
-        }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            BrokerLog.Write(
-                "Error",
-                "dispatcher_thread_failed",
-                "dispatch_error",
-                detail: $"topic={topic}; {exception.Message}");
-        }
-    }
-
-    private void RedriveDeadLetter(
-        BrokerThreadWorkItem workItem,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            Message? redriven = _redriveAsync(
-                    workItem.Topic,
-                    workItem.DeadLetterMessageId!.Value,
-                    cancellationToken)
-                .GetAwaiter()
-                .GetResult();
-
-            if (redriven != null)
-            {
-                _dispatchAsync(workItem.Topic, cancellationToken)
-                    .GetAwaiter()
-                    .GetResult();
-            }
-
-            workItem.Completion!.TrySetResult(redriven);
-        }
-        catch (OperationCanceledException)
-            when (cancellationToken.IsCancellationRequested)
-        {
-            workItem.Completion!.TrySetCanceled(cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            workItem.Completion!.TrySetException(exception);
-            BrokerLog.Write(
-                "Error",
-                "dead_letter_redrive_failed",
-                "thread_error",
-                detail:
-                    $"messageId={workItem.DeadLetterMessageId}; " +
-                    exception.Message);
-        }
-    }
-
-    private sealed record BrokerThreadWorkItem(
-        string Topic,
-        Guid? DeadLetterMessageId = null,
-        TaskCompletionSource<Message?>? Completion = null);
 }
+
+public sealed class BrokerState
+{
+    public List<Message> PublishedMessages { get; set; } = [];
+    public List<Subscription> Subscriptions { get; set; } = [];
+    public List<Delivery> Deliveries { get; set; } = [];
+    public List<AcknowledgementInfo> Acknowledgements { get; set; } = [];
+}
+
+public sealed class Subscription
+{
+    public string ConsumerId { get; set; } = string.Empty;
+    public string Topic { get; set; } = string.Empty;
+}
+
+public sealed class Delivery
+{
+    public Message Message { get; set; } = new();
+    public string ConsumerId { get; set; } = string.Empty;
+    public DeliveryStatus Status { get; set; }
+    public int RetryCount { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public DateTimeOffset NextAttemptUtc { get; set; }
+    public DateTimeOffset SentAtUtc { get; set; }
+    public DateTimeOffset? DeadLetteredAtUtc { get; set; }
+}
+
+public enum DeliveryStatus { Pending, WaitingAck, Acknowledged, DeadLetter }
+internal sealed record RedriveRequest(Guid? MessageId, TaskCompletionSource<bool> Completion);

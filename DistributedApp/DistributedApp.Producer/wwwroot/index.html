@@ -13,27 +13,18 @@
             <span class="brand-mark" aria-hidden="true">DO</span>
             <span>
                 <strong>Distributed Orders</strong>
-                <small>Reliable messaging dashboard</small>
             </span>
         </a>
 
-        <button id="refreshButton" class="secondary-button" type="button">
+        <div class="header-actions">
+            <div id="systemBadge" class="system-badge offline" role="status"><span class="status-dot" aria-hidden="true"></span><span id="systemBadgeText">Sistem offline</span></div>
+            <button id="refreshButton" class="secondary-button" type="button">
             <span aria-hidden="true">↻</span> Actualizează
         </button>
+        </div>
     </header>
 
     <main class="page-shell">
-        <section class="hero" aria-labelledby="pageTitle">
-            <div>
-                <p class="eyebrow">Sistem distribuit</p>
-                <h1 id="pageTitle">Trimite și urmărește comenzile</h1>
-                <p>Producerul publică o comandă, Brokerul o păstrează și o livrează, iar Consumerul confirmă procesarea.</p>
-            </div>
-            <div id="systemBadge" class="system-badge offline" role="status">
-                <span class="status-dot" aria-hidden="true"></span>
-                <span id="systemBadgeText">Sistem offline</span>
-            </div>
-        </section>
 
         <section class="status-grid" aria-label="Starea componentelor">
             <article class="status-card">
@@ -63,7 +54,7 @@
             <article class="panel order-panel">
                 <div class="panel-heading">
                     <div><p class="eyebrow">Mesaj nou</p><h2>Creează o comandă</h2></div>
-                    <span class="topic-label">topic: orders</span>
+                    <span id="topicLabel" class="topic-label">Producer</span>
                 </div>
 
                 <form id="orderForm" novalidate>
@@ -104,16 +95,10 @@
                 <div class="metric-list">
                     <div class="metric"><span>Mesaje în așteptare</span><strong id="pendingCount">—</strong></div>
                     <div class="metric"><span>În curs de livrare</span><strong id="inFlightCount">—</strong></div>
-                    <div class="metric"><span>Livrări confirmate</span><strong id="acknowledgedCount">—</strong></div>
+                    <div class="metric"><span>Livrări confirmate (total)</span><strong id="acknowledgedCount">—</strong></div>
                     <div class="metric"><span>Dead-letter queue</span><strong id="deadLetterCount">—</strong></div>
-                    <div class="metric"><span>Ultima actualizare</span><strong id="lastUpdated">Niciodată</strong></div>
                 </div>
 
-                <div class="flow" aria-label="Fluxul mesajului">
-                    <div><span class="flow-node">Producer</span><span aria-hidden="true">→</span><span class="flow-finish">PUBLISH</span></div>
-                    <div><span class="flow-node">Broker</span><span aria-hidden="true">→</span><span class="flow-finish">MESSAGE</span></div>
-                    <div><span class="flow-node">Consumer</span><span aria-hidden="true">→</span><span class="flow-finish">ACK / NACK</span></div>
-                </div>
             </aside>
         </section>
 
@@ -156,8 +141,6 @@
             </div>
         </section>
     </main>
-
-    <footer>Laborator PAD · Comunicare Producer → Broker → Consumer</footer>
     <script src="app.js"></script>
 </body>
 </html>
