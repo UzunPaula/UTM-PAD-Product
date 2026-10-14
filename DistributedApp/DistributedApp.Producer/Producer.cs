@@ -7,7 +7,9 @@ public sealed class Producer(TcpClientService tcp, ProducerSettings settings)
 {
     public async Task<PublishResult> PublishOrderAsync(OrderPayload order, CancellationToken token)
     {
-        if (string.IsNullOrWhiteSpace(order.OrderId) || string.IsNullOrWhiteSpace(order.Product) || order.Quantity < 1)
+        if (string.IsNullOrWhiteSpace(order.OrderId)
+            || string.IsNullOrWhiteSpace(order.Product)
+            || string.IsNullOrWhiteSpace(order.Description))
             return new PublishResult(false, Guid.Empty, Guid.Empty, "Completeaza corect comanda.");
 
         Message message = new()

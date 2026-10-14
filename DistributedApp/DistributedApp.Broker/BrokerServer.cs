@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -14,7 +13,6 @@ public sealed class BrokerServer
     private readonly TcpListener _listener;
     private readonly string _stateFile = Path.Combine(AppContext.BaseDirectory, "broker-state.json");
     private readonly Dictionary<string, ConsumerConnection> _onlineConsumers = [];
-    private readonly ConcurrentQueue<RedriveRequest> _redriveRequests = new();
     private BrokerState _state;
     private bool _running;
     private Thread? _deliveryThread;
@@ -90,13 +88,6 @@ public sealed class BrokerServer
                         await connection.SendAsync(StatusReply(message), token);
                         break;
 
-                    case MessageType.RedriveRequest:
-                        bool redriven = await RedriveAsync(message, token);
-                        await connection.SendAsync(
-                            Reply(message, redriven ? MessageType.Ack : MessageType.Nack,
-                                redriven ? null : "Consumer offline or message not found."),
-                            token);
-                        break;
                 }
             }
         }
@@ -149,6 +140,20 @@ public sealed class BrokerServer
 
             foreach (Message published in _state.PublishedMessages.Where(x => x.Topic == message.Topic))
                 AddDeliveryIfMissing(published, consumerId);
+
+            // La reconectarea aceluiași Consumer, livrările din DLQ se reiau automat.
+            foreach (Delivery delivery in _state.Deliveries.Where(x =>
+                         x.ConsumerId == consumerId
+                         && x.Message.Topic == message.Topic
+                         && x.Status == DeliveryStatus.DeadLetter))
+            {
+                delivery.Status = DeliveryStatus.Pending;
+                delivery.RetryCount = 0;
+                delivery.Reason = string.Empty;
+                delivery.NextAttemptUtc = DateTimeOffset.UtcNow;
+                delivery.DeadLetteredAtUtc = null;
+                Console.WriteLine($"AUTO REDRIVE: {delivery.Message.MessageId} for {consumerId}");
+            }
             SaveState();
         }
 
@@ -176,7 +181,6 @@ public sealed class BrokerServer
 
         while (_running)
         {
-            ProcessRedriveRequests();
             List<(Delivery Delivery, ConsumerConnection Connection)> toSend = [];
 
             lock (_sync)
@@ -280,41 +284,6 @@ public sealed class BrokerServer
             delivery.NextAttemptUtc = DateTimeOffset.UtcNow.AddMilliseconds(500);
         }
         SaveState();
-    }
-
-    private Task<bool> RedriveAsync(Message request, CancellationToken token)
-    {
-        TaskCompletionSource<bool> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        _redriveRequests.Enqueue(new RedriveRequest(request.RelatedMessageId, completion));
-        return completion.Task.WaitAsync(token);
-    }
-
-    private void ProcessRedriveRequests()
-    {
-        while (_redriveRequests.TryDequeue(out RedriveRequest? request))
-        {
-            bool success = false;
-            lock (_sync)
-            {
-                Delivery? delivery = _state.Deliveries.FirstOrDefault(x =>
-                    x.Message.MessageId == request.MessageId
-                    && x.Status == DeliveryStatus.DeadLetter
-                    && _onlineConsumers.ContainsKey(x.ConsumerId));
-
-                if (delivery is not null)
-                {
-                    delivery.Status = DeliveryStatus.Pending;
-                    delivery.RetryCount = 0;
-                    delivery.Reason = string.Empty;
-                    delivery.NextAttemptUtc = DateTimeOffset.UtcNow;
-                    delivery.DeadLetteredAtUtc = null;
-                    SaveState();
-                    success = true;
-                    Console.WriteLine($"REDRIVE by thread {_deliveryThread?.ManagedThreadId}: {delivery.Message.MessageId}");
-                }
-            }
-            request.Completion.SetResult(success);
-        }
     }
 
     private Message StatusReply(Message request)
@@ -447,4 +416,3 @@ public sealed class Delivery
 }
 
 public enum DeliveryStatus { Pending, WaitingAck, Acknowledged, DeadLetter }
-internal sealed record RedriveRequest(Guid? MessageId, TaskCompletionSource<bool> Completion);

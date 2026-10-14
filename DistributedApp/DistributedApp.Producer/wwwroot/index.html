@@ -74,9 +74,9 @@
                     </div>
 
                     <div class="field">
-                        <label for="quantity">Cantitate</label>
-                        <input id="quantity" name="quantity" type="number" min="1" max="1000" value="1" required>
-                        <small class="field-error" data-error-for="quantity"></small>
+                        <label for="description">Descriere</label>
+                        <textarea id="description" name="description" maxlength="1000" rows="5" placeholder="Descrie produsul sau cerințele comenzii" required></textarea>
+                        <small class="field-error" data-error-for="description"></small>
                     </div>
 
                     <button id="submitButton" class="primary-button" type="submit">
@@ -109,7 +109,7 @@
             </div>
             <div class="table-wrap">
                 <table>
-                    <thead><tr><th>Comandă</th><th>Produs</th><th>Cantitate</th><th>Rezultat</th><th>Mesaj</th></tr></thead>
+                    <thead><tr><th>Comandă</th><th>Produs</th><th>Descriere</th><th>Rezultat</th><th>Mesaj</th></tr></thead>
                     <tbody id="historyBody">
                         <tr class="empty-row"><td colspan="5">Nu au fost trimise comenzi în această sesiune.</td></tr>
                     </tbody>
@@ -131,11 +131,10 @@
                             <th>Retry-uri</th>
                             <th>Motiv</th>
                             <th>Moment</th>
-                            <th>Acțiune</th>
                         </tr>
                     </thead>
                     <tbody id="deadLetterBody">
-                        <tr class="empty-row"><td colspan="6">Nu există mesaje în dead-letter queue.</td></tr>
+                        <tr class="empty-row"><td colspan="5">Nu există mesaje în dead-letter queue.</td></tr>
                     </tbody>
                 </table>
             </div>

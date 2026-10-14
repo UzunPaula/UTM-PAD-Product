@@ -1,14 +1,13 @@
 const api = {
     status: "/api/status",
-    orders: "/api/orders",
-    deadLetters: "/api/dead-letters"
+    orders: "/api/orders"
 };
 
 const elements = {
     form: document.querySelector("#orderForm"),
     orderId: document.querySelector("#orderId"),
     product: document.querySelector("#product"),
-    quantity: document.querySelector("#quantity"),
+    description: document.querySelector("#description"),
     submitButton: document.querySelector("#submitButton"),
     refreshButton: document.querySelector("#refreshButton"),
     result: document.querySelector("#submissionResult"),
@@ -47,9 +46,7 @@ function validateOrder(order) {
     const errors = {
         orderId: order.orderId ? "" : "ID-ul comenzii este obligatoriu.",
         product: order.product ? "" : "Produsul este obligatoriu.",
-        quantity: Number.isInteger(order.quantity) && order.quantity >= 1 && order.quantity <= 1000
-            ? ""
-            : "Cantitatea trebuie să fie între 1 și 1000."
+        description: order.description ? "" : "Descrierea este obligatorie."
     };
 
     Object.entries(errors).forEach(([field, message]) => setFieldError(field, message));
@@ -87,7 +84,7 @@ function renderDeadLetters(deadLetters) {
     if (entries.length === 0) {
         const row = document.createElement("tr");
         row.className = "empty-row";
-        row.innerHTML = '<td colspan="6">Nu există mesaje în dead-letter queue.</td>';
+        row.innerHTML = '<td colspan="5">Nu există mesaje în dead-letter queue.</td>';
         elements.deadLetterBody.append(row);
         return;
     }
@@ -115,17 +112,6 @@ function renderDeadLetters(deadLetters) {
             }
             row.append(cell);
         });
-        const actionCell = document.createElement("td");
-        const redriveButton = document.createElement("button");
-        redriveButton.type = "button";
-        redriveButton.className = "redrive-button";
-        redriveButton.textContent = "Reîncearcă";
-        redriveButton.title =
-            "Scoate mesajul din DLQ și reintrodu-l în coada normală";
-        redriveButton.addEventListener("click", () =>
-            redriveDeadLetter(entry.messageId, redriveButton));
-        actionCell.append(redriveButton);
-        row.append(actionCell);
         elements.deadLetterBody.append(row);
     });
 }
@@ -152,49 +138,6 @@ function updateHistoryDeliveryStates(status) {
     renderHistory();
 }
 
-async function redriveDeadLetter(messageId, button) {
-    button.disabled = true;
-    button.textContent = "Se mută…";
-
-    try {
-        const response = await fetch(
-            api.deadLetters + "/" + encodeURIComponent(messageId) + "/redrive",
-            {
-                method: "POST",
-                headers: { Accept: "application/json" }
-            });
-        const result = await response.json().catch(() => ({}));
-
-        if (!response.ok || result.redriven !== true) {
-            throw new Error(
-                result.reason
-                || "Mesajul nu a putut fi reintrodus în coadă.");
-        }
-
-        const historyItem = history.find(item =>
-            String(item.messageId).toLowerCase()
-                === String(messageId).toLowerCase());
-        if (historyItem) {
-            historyItem.state = "pending";
-            renderHistory();
-        }
-
-        showResult(
-            true,
-            "Mesajul a fost scos din DLQ.",
-            "Mesajul " + messageId
-                + " a fost reintrodus în coada orders și este preluat de threadul Brokerului.");
-        await refreshStatus();
-    } catch (error) {
-        showResult(
-            false,
-            "Redrive eșuat.",
-            error.message || "Mesajul nu a putut fi reintrodus.");
-    } finally {
-        button.disabled = false;
-        button.textContent = "Reîncearcă";
-    }
-}
 async function refreshStatus() {
     if (statusRefreshInProgress) return;
     statusRefreshInProgress = true;
@@ -253,7 +196,7 @@ function renderHistory() {
 
     history.forEach(item => {
         const row = document.createElement("tr");
-        const values = [item.orderId, item.product, item.quantity];
+        const values = [item.orderId, item.product, item.description];
         values.forEach(value => {
             const cell = document.createElement("td");
             cell.textContent = value;
@@ -286,7 +229,7 @@ async function submitOrder(event) {
     const order = {
         orderId: elements.orderId.value.trim(),
         product: elements.product.value.trim(),
-        quantity: Number(elements.quantity.value)
+        description: elements.description.value.trim()
     };
 
     if (!validateOrder(order)) return;
@@ -312,7 +255,6 @@ async function submitOrder(event) {
         });
         elements.form.reset();
         elements.orderId.value = createOrderId();
-        elements.quantity.value = 1;
         await refreshStatus();
     } catch (error) {
         const detail = error instanceof Error ? error.message : "Backendul nu este disponibil.";

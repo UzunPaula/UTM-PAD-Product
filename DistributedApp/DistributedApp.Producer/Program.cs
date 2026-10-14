@@ -75,21 +75,5 @@ app.MapGet("/api/status", async (TcpClientService tcp, CancellationToken token) 
     }
 });
 
-app.MapPost("/api/dead-letters/{messageId:guid}/redrive", async (
-    Guid messageId, TcpClientService tcp, CancellationToken token) =>
-{
-    try
-    {
-        Message reply = await tcp.RedriveAsync(messageId, token);
-        return reply.Type == MessageType.Ack
-            ? Results.Ok(new { redriven = true, messageId })
-            : Results.BadRequest(new { redriven = false, messageId, reason = reply.Reason });
-    }
-    catch
-    {
-        return Results.Json(new { redriven = false, reason = "Broker offline." }, statusCode: 503);
-    }
-});
-
 app.MapFallbackToFile("index.html");
 app.Run();
