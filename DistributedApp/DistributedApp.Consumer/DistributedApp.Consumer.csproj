@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="ProcessedMessageStore.cs" />
     <ProjectReference Include="..\DistributedApp.Contracts\DistributedApp.Contracts.csproj" />
   </ItemGroup>
 </Project>
