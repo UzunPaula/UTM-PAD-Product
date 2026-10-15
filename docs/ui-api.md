@@ -1,7 +1,7 @@
 # User interface integration
 
 The user interface is a small dashboard served from the Producer application.
-It does not connect directly to the TCP broker. The Producer backend remains
+It does not connect directly to the broker. The Producer backend remains
 responsible for creating the message envelope, publishing it, and interpreting
 the broker acknowledgement.
 
@@ -62,7 +62,7 @@ Request:
 {
   "orderId": "ORD-12345678",
   "product": "Keyboard",
-  "quantity": 1
+  "description": "Mechanical keyboard with USB-C"
 }
 ```
 
@@ -72,7 +72,8 @@ Successful response after the Broker acknowledges durable enqueueing:
 {
   "accepted": true,
   "messageId": "c2a3e115-6924-4ed1-a677-f3a03dd42931",
-  "correlationId": "2683f844-4773-42c2-b0d4-ae770af630a0"
+  "correlationId": "2683f844-4773-42c2-b0d4-ae770af630a0",
+  "outcome": "Accepted"
 }
 ```
 
@@ -85,13 +86,16 @@ Rejected response:
 }
 ```
 
-Use an appropriate 4xx or 5xx HTTP status for rejected requests. The interface
+The endpoint returns `400` for a rejected publication, `504` with `outcome: "Unknown"`
+when the result remains ambiguous, and `503` when the Broker is unavailable.
+The interface
 keeps only a session history in memory; it adds no database or client-side
 persistence.
 
 ## Component boundary
 
 - The browser communicates only with the Producer HTTP API.
-- The Producer communicates with the Broker through versioned JSON Lines.
+- The Producer publishes through gRPC and requests dashboard status through
+  versioned TCP JSON Lines.
 - The Broker owns queue, subscriber, in-flight, retry, and dead-letter state.
 - The Consumer has no dependency on the web interface.

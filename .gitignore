@@ -1,6 +1,8 @@
 .idea/
 bin/
 obj/
+/data/*.json
+/data/*.json.tmp
 .vs/
 *.user
 *.suo

@@ -17,8 +17,8 @@ public sealed class Message
     public string? Reason { get; set; }
 }
 
-public enum MessageType { Publish, Subscribe, Delivery, Ack, Nack, StatusRequest, StatusResponse, RedriveRequest }
-public sealed record OrderPayload(string OrderId, string Product, int Quantity);
+public enum MessageType { Publish, Subscribe, Delivery, Ack, Nack, StatusRequest, StatusResponse }
+public sealed record OrderPayload(string OrderId, string Product, string Description);
 
 public sealed class BrokerStatus
 {

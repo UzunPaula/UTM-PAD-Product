@@ -32,11 +32,4 @@ public sealed class TcpClientService(ProducerSettings settings)
         return MessageJson.Deserialize<BrokerStatus>(reply.Payload);
     }
 
-    public Task<Message> RedriveAsync(Guid messageId, CancellationToken token) => SendAsync(new Message
-    {
-        Type = MessageType.RedriveRequest,
-        SenderId = settings.ProducerId,
-        Topic = settings.ProducerId,
-        RelatedMessageId = messageId
-    }, token);
 }

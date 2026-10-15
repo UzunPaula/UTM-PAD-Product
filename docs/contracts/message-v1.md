@@ -1,7 +1,9 @@
 # Message contract 1.0
 
-All components exchange UTF-8 JSON Lines. Each TCP frame contains one JSON
-object followed by a line-feed character.
+This document describes the TCP contract used by Broker and Consumer and by
+the Producer status request. Lab 2 publication uses the separate gRPC contract
+[`broker_v1.proto`](../../DistributedApp/DistributedApp.Broker/Protos/broker_v1.proto).
+Each TCP frame contains one UTF-8 JSON object followed by a line-feed character.
 
 ## Envelope
 
@@ -43,7 +45,7 @@ uses the same TCP framing and validation rules as delivery traffic.
   "topic": "orders",
   "sequenceNumber": 7,
   "retryCount": 0,
-  "payload": "{\"orderId\":\"ORD-7\",\"product\":\"Laptop\",\"quantity\":2}",
+  "payload": "{\"orderId\":\"ORD-7\",\"product\":\"Laptop\",\"description\":\"Portable computer\"}",
   "relatedMessageId": null,
   "reason": null
 }

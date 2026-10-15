@@ -2,9 +2,13 @@
 
 ## Responsibility
 
-The broker accepts published messages over TCP, stores them durably, and
+For the Lab 2 gRPC publishing flow and its failure evidence, see
+[`broker-lab2.md`](broker-lab2.md). This page also describes the original TCP
+delivery protocol.
+
+The broker accepts published messages over TCP or gRPC, stores them durably, and
 delivers them to the consumer subscribed to the matching topic. The wire
-protocol is JSON Lines and uses the versioned message contract.
+protocol for the TCP path is JSON Lines and uses the versioned message contract.
 
 ## Delivery flow
 
@@ -25,14 +29,16 @@ backoff with jitter and keeps the same messageId. When maxRetries is exceeded,
 the message and failure reason are persisted in the dead-letter queue, and
 delivery continues with the next queued message.
 
-The default configuration allows three retries after the initial delivery.
-Retry limits, acknowledgement timeout, scan interval, and retry delays are
-external settings in broker.settings.json.
+The current implementation uses three retries after the initial delivery and
+an acknowledgement timeout of two seconds. These values are constants in the
+Broker code, not external settings.
 
 ## Persistence and recovery
 
-Queues, sequence counters, retry counts, and dead-letter entries are stored in
-data/broker-state.json beside the deployed settings file. The broker writes a
+Publications, subscriptions, delivery states, retry counts, and dead-letter
+entries are stored in `data/broker-state.json` at the repository root during
+local development. The path can be overridden with `BROKER_STATE_FILE`.
+The broker writes a
 complete temporary file and replaces the state file only after the write
 finishes. Corrupted state stops startup instead of silently losing messages.
 
@@ -67,6 +73,7 @@ critical crash-before-acknowledgement recovery scenario over real TCP sockets.
 - Delivery is at least once until acknowledgement or dead-lettering.
 - FIFO order is guaranteed per topic, not globally across topics.
 - The consumer effect is at most once for a stable messageId.
-- One consumer connection is active per topic in this laboratory increment.
+- One active connection is allowed per `consumerId`; different Consumers may
+  subscribe to the same topic.
 - JSON file persistence is intentionally single-process and is not designed
   for a replicated broker cluster.
