@@ -40,7 +40,9 @@ public sealed class ConsumerDeliveryIntegrationTests
                 await using NetworkStream firstStream = firstConnection.GetStream();
                 using StreamReader reader = NewReader(firstStream);
                 await using StreamWriter writer = NewWriter(firstStream);
-                Assert.Equal("consumer-restart", (await ReadMessage(reader, timeout.Token)).SenderId);
+                Message subscription = await ReadMessage(reader, timeout.Token);
+                Assert.Equal("consumer-restart", subscription.SenderId);
+                await ConfirmSubscription(writer, subscription);
 
                 await writer.WriteLineAsync(MessageJson.Serialize(delivery));
                 Task<string?> response = reader.ReadLineAsync(timeout.Token).AsTask();
@@ -58,7 +60,9 @@ public sealed class ConsumerDeliveryIntegrationTests
             await using NetworkStream secondStream = secondConnection.GetStream();
             using StreamReader secondReader = NewReader(secondStream);
             await using StreamWriter secondWriter = NewWriter(secondStream);
-            Assert.Equal("consumer-restart", (await ReadMessage(secondReader, timeout.Token)).SenderId);
+            Message secondSubscription = await ReadMessage(secondReader, timeout.Token);
+            Assert.Equal("consumer-restart", secondSubscription.SenderId);
+            await ConfirmSubscription(secondWriter, secondSubscription);
 
             await secondWriter.WriteLineAsync(MessageJson.Serialize(delivery));
             Message acknowledgement = await ReadMessage(secondReader, timeout.Token);
@@ -89,14 +93,18 @@ public sealed class ConsumerDeliveryIntegrationTests
             await using NetworkStream firstStream = firstConnection.GetStream();
             using StreamReader firstReader = NewReader(firstStream);
             await using StreamWriter firstWriter = NewWriter(firstStream);
-            Assert.Equal("consumer-a", (await ReadMessage(firstReader, timeout.Token)).SenderId);
+            Message firstSubscription = await ReadMessage(firstReader, timeout.Token);
+            Assert.Equal("consumer-a", firstSubscription.SenderId);
+            await ConfirmSubscription(firstWriter, firstSubscription);
 
             second = StartConsumer(broker, "consumer-b", secondFile);
             using TcpClient secondConnection = await broker.AcceptTcpClientAsync(timeout.Token);
             await using NetworkStream secondStream = secondConnection.GetStream();
             using StreamReader secondReader = NewReader(secondStream);
             await using StreamWriter secondWriter = NewWriter(secondStream);
-            Assert.Equal("consumer-b", (await ReadMessage(secondReader, timeout.Token)).SenderId);
+            Message secondSubscription = await ReadMessage(secondReader, timeout.Token);
+            Assert.Equal("consumer-b", secondSubscription.SenderId);
+            await ConfirmSubscription(secondWriter, secondSubscription);
 
             await firstWriter.WriteLineAsync(MessageJson.Serialize(delivery));
             await secondWriter.WriteLineAsync(MessageJson.Serialize(delivery));
@@ -127,7 +135,10 @@ public sealed class ConsumerDeliveryIntegrationTests
             using TcpClient connection = await broker.AcceptTcpClientAsync(timeout.Token);
             await using NetworkStream stream = connection.GetStream();
             using StreamReader reader = NewReader(stream);
-            Assert.Equal("consumer-same", (await ReadMessage(reader, timeout.Token)).SenderId);
+            await using StreamWriter writer = NewWriter(stream);
+            Message subscription = await ReadMessage(reader, timeout.Token);
+            Assert.Equal("consumer-same", subscription.SenderId);
+            await ConfirmSubscription(writer, subscription);
 
             second = StartConsumer(broker, "consumer-same", stateFile);
             await second.WaitForExitAsync(timeout.Token);
@@ -141,6 +152,69 @@ public sealed class ConsumerDeliveryIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task SubscriptionNackShowsReasonWithoutClaimingSubscription()
+    {
+        using TcpListener broker = NewBroker();
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        string stateFile = NewStateFile();
+        Process consumer = StartConsumer(broker, "consumer-rejected", stateFile);
+
+        try
+        {
+            using TcpClient connection = await broker.AcceptTcpClientAsync(timeout.Token);
+            await using NetworkStream stream = connection.GetStream();
+            using StreamReader reader = NewReader(stream);
+            await using StreamWriter writer = NewWriter(stream);
+            Message subscription = await ReadMessage(reader, timeout.Token);
+            await ConfirmSubscription(writer, subscription, MessageType.Nack, "ConsumerId is already connected.");
+
+            await consumer.WaitForExitAsync(timeout.Token);
+            Assert.Equal(2, consumer.ExitCode);
+            Assert.Contains("SUBSCRIBE REJECTED: ConsumerId is already connected.",
+                await consumer.StandardError.ReadToEndAsync(timeout.Token));
+            Assert.DoesNotContain("SUBSCRIBED:", await consumer.StandardOutput.ReadToEndAsync(timeout.Token));
+            Assert.False(File.Exists(stateFile));
+        }
+        finally
+        {
+            await StopConsumer(consumer);
+        }
+    }
+
+    [Fact]
+    public async Task SubscriptionAckMustReferToTheSentRequest()
+    {
+        using TcpListener broker = NewBroker();
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        string stateFile = NewStateFile();
+        Process consumer = StartConsumer(broker, "consumer-wrong-ack", stateFile);
+
+        try
+        {
+            using TcpClient connection = await broker.AcceptTcpClientAsync(timeout.Token);
+            await using NetworkStream stream = connection.GetStream();
+            using StreamReader reader = NewReader(stream);
+            await using StreamWriter writer = NewWriter(stream);
+            Message subscription = await ReadMessage(reader, timeout.Token);
+            await writer.WriteLineAsync(MessageJson.Serialize(new Message
+            {
+                Type = MessageType.Ack,
+                SenderId = "broker",
+                Topic = subscription.Topic,
+                RelatedMessageId = Guid.NewGuid(),
+                CorrelationId = subscription.CorrelationId
+            }));
+
+            Assert.Null(await reader.ReadLineAsync(timeout.Token));
+            Assert.False(File.Exists(stateFile));
+        }
+        finally
+        {
+            await StopConsumer(consumer);
+        }
+    }
+
     private static TcpListener NewBroker()
     {
         TcpListener broker = new(IPAddress.Loopback, 0);
@@ -150,7 +224,13 @@ public sealed class ConsumerDeliveryIntegrationTests
 
     private static Process StartConsumer(TcpListener broker, string consumerId, string stateFile, string? mode = null)
     {
-        ProcessStartInfo start = new("dotnet") { UseShellExecute = false, CreateNoWindow = true };
+        ProcessStartInfo start = new("dotnet")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
         start.ArgumentList.Add(typeof(ProcessedMessageStore).Assembly.Location);
         start.ArgumentList.Add(consumerId);
         start.ArgumentList.Add("producer-1");
@@ -176,6 +256,18 @@ public sealed class ConsumerDeliveryIntegrationTests
 
     private static async Task<Message> ReadMessage(StreamReader reader, CancellationToken token) =>
         MessageJson.Deserialize<Message>(await reader.ReadLineAsync(token) ?? throw new IOException("No message."));
+
+    private static Task ConfirmSubscription(StreamWriter writer, Message request,
+        MessageType responseType = MessageType.Ack, string? reason = null) =>
+        writer.WriteLineAsync(MessageJson.Serialize(new Message
+        {
+            Type = responseType,
+            SenderId = "broker",
+            Topic = request.Topic,
+            RelatedMessageId = request.MessageId,
+            CorrelationId = request.CorrelationId,
+            Reason = reason
+        }));
 
     private static Message NewDelivery() => new()
     {

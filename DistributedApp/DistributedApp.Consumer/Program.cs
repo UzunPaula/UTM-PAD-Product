@@ -55,7 +55,11 @@ while (!stop.IsCancellationRequested)
 {
     try
     {
-        await RunConnectionAsync(stop.Token);
+        if (!await RunConnectionAsync(stop.Token))
+        {
+            Environment.ExitCode = 2;
+            break;
+        }
         Console.WriteLine("Broker disconnected. Reconnecting...");
     }
     catch (OperationCanceledException) when (stop.IsCancellationRequested)
@@ -77,7 +81,7 @@ while (!stop.IsCancellationRequested)
     }
 }
 
-async Task RunConnectionAsync(CancellationToken cancellationToken)
+async Task<bool> RunConnectionAsync(CancellationToken cancellationToken)
 {
     using TcpClient client = new();
     await client.ConnectAsync(brokerHost, brokerPort, cancellationToken);
@@ -98,6 +102,29 @@ async Task RunConnectionAsync(CancellationToken cancellationToken)
         Topic = topic
     };
     await writer.WriteLineAsync(MessageJson.Serialize(subscription).AsMemory(), cancellationToken);
+
+    string confirmationLine = await reader.ReadLineAsync(cancellationToken)
+        ?? throw new IOException("Broker disconnected before confirming the subscription.");
+    Message confirmation;
+    try
+    {
+        confirmation = MessageJson.Deserialize<Message>(confirmationLine);
+    }
+    catch (JsonException exception)
+    {
+        throw new IOException("Broker sent an invalid subscription response.", exception);
+    }
+
+    if (confirmation.RelatedMessageId != subscription.MessageId
+        || confirmation.Type is not (MessageType.Ack or MessageType.Nack))
+        throw new IOException("Broker sent a response for a different subscription request.");
+
+    if (confirmation.Type == MessageType.Nack)
+    {
+        Console.Error.WriteLine($"SUBSCRIBE REJECTED: {confirmation.Reason ?? "No reason provided."}");
+        return false;
+    }
+
     Console.WriteLine($"SUBSCRIBED: {consumerId} -> {topic}");
 
     while (await reader.ReadLineAsync(cancellationToken) is { } line)
@@ -155,4 +182,6 @@ async Task RunConnectionAsync(CancellationToken cancellationToken)
         await writer.WriteLineAsync(MessageJson.Serialize(response).AsMemory(), cancellationToken);
         Console.WriteLine(result.Accepted ? "ACK sent" : $"NACK sent: {result.Reason}");
     }
+
+    return true;
 }
