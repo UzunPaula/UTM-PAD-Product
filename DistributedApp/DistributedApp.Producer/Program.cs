@@ -29,7 +29,13 @@ app.MapPost("/api/orders", async (
     try
     {
         PublishResult result = await producer.PublishOrderAsync(order, token, simulateLostResponse);
-        return result.Accepted ? Results.Ok(result) : Results.BadRequest(result);
+        // Un timeout după publicare nu dovedește respingerea: păstrăm rezultatul ambiguu explicit.
+        return result.Outcome switch
+        {
+            PublishOutcome.Accepted or PublishOutcome.Duplicate => Results.Ok(result),
+            PublishOutcome.Unknown => Results.Json(result, statusCode: StatusCodes.Status504GatewayTimeout),
+            _ => Results.BadRequest(result)
+        };
     }
     catch
     {

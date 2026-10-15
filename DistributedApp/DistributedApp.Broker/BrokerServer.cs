@@ -101,7 +101,16 @@ public sealed class BrokerServer
                         break;
 
                     case MessageType.Subscribe:
-                        registeredConsumer = Subscribe(message, connection);
+                        // O conexiune reprezintă un singur Consumer; un abonament respins închide conexiunea.
+                        if (registeredConsumer is not null)
+                        {
+                            Console.WriteLine($"SUBSCRIBE REJECTED: {connection.RemoteEndpoint} is already registered");
+                            return;
+                        }
+
+                        string? consumerId = Subscribe(message, connection);
+                        if (consumerId is null) return;
+                        registeredConsumer = consumerId;
                         break;
 
                     case MessageType.Ack:
@@ -172,7 +181,7 @@ public sealed class BrokerServer
             return _state.PublishedMessages.Any(x => x.MessageId == messageId);
     }
 
-    private string Subscribe(Message message, ConsumerConnection connection)
+    private string? Subscribe(Message message, ConsumerConnection connection)
     {
         string consumerId = string.IsNullOrWhiteSpace(message.SenderId)
             ? "consumer-" + Guid.NewGuid().ToString("N")[..8]
@@ -180,6 +189,13 @@ public sealed class BrokerServer
 
         lock (_sync)
         {
+            // Verificarea și înregistrarea sunt atomice: a doua conexiune nu o înlocuiește pe prima.
+            if (_onlineConsumers.TryGetValue(consumerId, out ConsumerConnection? active))
+            {
+                Console.WriteLine($"SUBSCRIBE REJECTED: {consumerId} is already active at {active.RemoteEndpoint}");
+                return null;
+            }
+
             _onlineConsumers[consumerId] = connection;
             if (!_state.Subscriptions.Any(x => x.ConsumerId == consumerId && x.Topic == message.Topic))
                 _state.Subscriptions.Add(new Subscription { ConsumerId = consumerId, Topic = message.Topic });

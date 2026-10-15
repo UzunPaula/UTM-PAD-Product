@@ -2,9 +2,11 @@
 using DistributedApp.Contracts;
 using Grpc.Core;
 using Grpc.Net.Client;
+using System.Text.Json.Serialization;
 
 namespace DistributedApp.Producer;
 
+[JsonConverter(typeof(JsonStringEnumConverter<PublishOutcome>))]
 public enum PublishOutcome { Accepted, Duplicate, Rejected, Unknown }
 
 public sealed class GrpcClientService : IDisposable

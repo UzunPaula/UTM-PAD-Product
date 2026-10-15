@@ -11,7 +11,8 @@ public sealed class Producer(GrpcClientService grpc, ProducerSettings settings)
         if (string.IsNullOrWhiteSpace(order.OrderId)
             || string.IsNullOrWhiteSpace(order.Product)
             || string.IsNullOrWhiteSpace(order.Description))
-            return new PublishResult(false, Guid.Empty, Guid.Empty, "Completeaza corect comanda.");
+            return new PublishResult(false, Guid.Empty, Guid.Empty, "Completeaza corect comanda.",
+                PublishOutcome.Rejected);
 
         Message message = new()
         {
@@ -25,15 +26,18 @@ public sealed class Producer(GrpcClientService grpc, ProducerSettings settings)
 
         return outcome switch
         {
-            PublishOutcome.Accepted => new PublishResult(true, message.MessageId, message.CorrelationId, null),
+            PublishOutcome.Accepted => new PublishResult(true, message.MessageId, message.CorrelationId, null,
+                PublishOutcome.Accepted),
             PublishOutcome.Duplicate => new PublishResult(true, message.MessageId, message.CorrelationId,
-                "Mesajul fusese deja primit de broker (duplicat ignorat)."),
+                "Mesajul fusese deja primit de broker (duplicat ignorat).", PublishOutcome.Duplicate),
             PublishOutcome.Rejected => new PublishResult(false, message.MessageId, message.CorrelationId,
-                "Brokerul a respins mesajul."),
+                "Brokerul a respins mesajul.", PublishOutcome.Rejected),
             _ => new PublishResult(false, message.MessageId, message.CorrelationId,
-                "Rezultat necunoscut: brokerul nu a raspuns, nu se stie daca mesajul a fost primit.")
+                "Rezultat necunoscut: brokerul nu a raspuns, nu se stie daca mesajul a fost primit.",
+                PublishOutcome.Unknown)
         };
     }
 }
 
-public sealed record PublishResult(bool Accepted, Guid MessageId, Guid CorrelationId, string? Reason);
+public sealed record PublishResult(
+    bool Accepted, Guid MessageId, Guid CorrelationId, string? Reason, PublishOutcome Outcome);
