@@ -21,9 +21,12 @@ Each TCP frame contains one UTF-8 JSON object followed by a line-feed character.
 | `relatedMessageId` | UUID | Required for `Ack`, `Nack`, and `StatusResponse`. |
 | `reason` | string | Required for `Nack`. |
 
-An acknowledgement has its own `messageId`. The `relatedMessageId` identifies
-the delivered message being acknowledged. This keeps message identity separate
-from acknowledgement identity.
+An acknowledgement has its own `messageId`. For a delivery `Ack` or `Nack`,
+`relatedMessageId` identifies the delivered message. For a `Subscribe` reply,
+the Broker sends `Ack` after saving the subscription, or `Nack` with a reason
+when it rejects the request; `relatedMessageId` then identifies the Subscribe
+request. The reply keeps the request's `correlationId` and topic. This lets the
+Consumer distinguish subscription confirmation from delivery acknowledgement.
 
 ## Monitoring exchange
 

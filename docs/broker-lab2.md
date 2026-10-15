@@ -12,6 +12,8 @@ Broker   --TCP Delivery------------------------------------------> Consumer
 Broker   <--TCP ACK/NACK------------------------------------------ Consumer
 ```
 
+La `Subscribe` pe TCP, Brokerul răspunde cu `Ack` după salvarea abonamentului și înainte de prima livrare. Confirmarea are `RelatedMessageId` egal cu `MessageId` al cererii și păstrează `CorrelationId` și `Topic`. Dacă ID-ul Consumerului este deja conectat, conexiunea este deja abonată sau cererea nu are identificatorii necesari, Brokerul răspunde cu `Nack` motivat și închide conexiunea respinsă. Consumerul poate astfel să afișeze „abonat” numai după `Ack`-ul corespunzător. Consumatorii vechi ignoră acest răspuns; noul Consumer trebuie să îl verifice explicit.
+
 `request_id` identifică apelul, `message_id` este cheia stabilă de idempotency și `correlation_id` leagă întregul flux. Producerul trebuie să păstreze aceleași valori la retry, nu să genereze un mesaj nou. `occurred_at_utc` trebuie să conțină un moment UTC. Brokerul validează versiunea, tipul, identificatorii și câmpurile necesare înainte de efect.
 
 ## Rezultat ambiguu și fallback
@@ -47,6 +49,6 @@ Testul `LostReplyIsResolvedByStatusAndRetryDoesNotDuplicate` pornește Brokerul 
 | Retry de verificare | Același `message_id` întoarce `duplicate = true`. |
 | Final | Fișierul de stare conține exact o publicație pentru acel ID. |
 
-Comanda de test de mai sus a fost executată pe `feature/broker`: **8 teste trecute, 0 eșuate**. Nu se folosește un fișier de stare din `data/` la teste; fiecare scenariu are o cale temporară separată. Un test separat verifică faptul că reutilizarea unui `message_id` cu alt conținut produce `AlreadyExists` și nu adaugă altă publicație.
+Comanda de test de mai sus a fost executată pe `feature/broker`: **12 teste trecute, 0 eșuate**. Nu se folosește un fișier de stare din `data/` la teste; fiecare scenariu are o cale temporară separată. Un test separat verifică faptul că reutilizarea unui `message_id` cu alt conținut produce `AlreadyExists` și nu adaugă altă publicație. Testele TCP verifică și `Ack` înainte de prima livrare, respectiv `Nack` pentru abonări respinse.
 
 Limite: nu există tranzacție distribuită cu Consumerul; `GetPublishStatus` arată acceptarea în Broker, nu finalizarea livrării; portul gRPC este configurat pentru dezvoltare locală fără TLS. În producție ar trebui adăugate TLS, autentificare și o stocare tranzacțională robustă.
