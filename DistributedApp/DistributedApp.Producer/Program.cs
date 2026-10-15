@@ -23,11 +23,12 @@ app.UseStaticFiles(new StaticFileOptions
     OnPrepareResponse = context => context.Context.Response.Headers.CacheControl = "no-store"
 });
 
-app.MapPost("/api/orders", async (OrderPayload order, Producer producer, CancellationToken token) =>
+app.MapPost("/api/orders", async (
+    OrderPayload order, Producer producer, CancellationToken token, bool simulateLostResponse = false) =>
 {
     try
     {
-        PublishResult result = await producer.PublishOrderAsync(order, token);
+        PublishResult result = await producer.PublishOrderAsync(order, token, simulateLostResponse);
         return result.Accepted ? Results.Ok(result) : Results.BadRequest(result);
     }
     catch

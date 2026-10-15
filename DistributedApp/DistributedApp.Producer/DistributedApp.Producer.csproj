@@ -7,4 +7,13 @@
   <ItemGroup>
     <ProjectReference Include="..\DistributedApp.Contracts\DistributedApp.Contracts.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.27.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="All" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="..\DistributedApp.Broker\Protos\broker_v1.proto"
+              Link="Protos\broker_v1.proto" GrpcServices="Client" />
+  </ItemGroup>
 </Project>

@@ -3,9 +3,10 @@ using DistributedApp.Contracts;
 
 namespace DistributedApp.Producer;
 
-public sealed class Producer(TcpClientService tcp, ProducerSettings settings)
+public sealed class Producer(GrpcClientService grpc, ProducerSettings settings)
 {
-    public async Task<PublishResult> PublishOrderAsync(OrderPayload order, CancellationToken token)
+    public async Task<PublishResult> PublishOrderAsync(
+        OrderPayload order, CancellationToken token, bool simulateLostResponse = false)
     {
         if (string.IsNullOrWhiteSpace(order.OrderId)
             || string.IsNullOrWhiteSpace(order.Product)
@@ -19,8 +20,19 @@ public sealed class Producer(TcpClientService tcp, ProducerSettings settings)
             Topic = settings.ProducerId,
             Payload = JsonSerializer.Serialize(order)
         };
-        Message reply = await tcp.SendAsync(message, token);
-        return new PublishResult(reply.Type == MessageType.Ack, message.MessageId, message.CorrelationId, reply.Reason);
+
+        PublishOutcome outcome = await grpc.SendAsync(message, simulateLostResponse, token);
+
+        return outcome switch
+        {
+            PublishOutcome.Accepted => new PublishResult(true, message.MessageId, message.CorrelationId, null),
+            PublishOutcome.Duplicate => new PublishResult(true, message.MessageId, message.CorrelationId,
+                "Mesajul fusese deja primit de broker (duplicat ignorat)."),
+            PublishOutcome.Rejected => new PublishResult(false, message.MessageId, message.CorrelationId,
+                "Brokerul a respins mesajul."),
+            _ => new PublishResult(false, message.MessageId, message.CorrelationId,
+                "Rezultat necunoscut: brokerul nu a raspuns, nu se stie daca mesajul a fost primit.")
+        };
     }
 }
 
