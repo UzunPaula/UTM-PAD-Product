@@ -1,0 +1,49 @@
+﻿syntax = "proto3";
+
+package distributedapp.broker.v1;
+option csharp_namespace = "DistributedApp.Broker.Grpc.V1";
+
+// Contract v1: numerele câmpurilor existente nu se reutilizează la evoluția contractului.
+service BrokerRpcV1 {
+  rpc Publish (PublishRequest) returns (PublishReply);
+  rpc GetPublishStatus (PublishStatusRequest) returns (PublishStatusReply);
+  rpc CheckHealth (HealthRequest) returns (HealthReply);
+}
+
+message PublishRequest {
+  string request_id = 1;
+  string message_id = 2;
+  string correlation_id = 3;
+  string message_type = 4;
+  string schema_version = 5;
+  string occurred_at_utc = 6;
+  string topic = 7;
+  string payload = 8;
+  string sender_id = 9;
+}
+
+message PublishReply {
+  string request_id = 1;
+  string message_id = 2;
+  string correlation_id = 3;
+  bool accepted = 4;
+  bool duplicate = 5;
+  string status = 6;
+  string schema_version = 7;
+}
+
+message PublishStatusRequest { string message_id = 1; }
+message PublishStatusReply {
+  string message_id = 1;
+  bool found = 2;
+  string status = 3;
+  string schema_version = 4;
+}
+
+message HealthRequest {}
+message HealthReply {
+  string status = 1;
+  string component = 2;
+  string schema_version = 3;
+  string observed_at_utc = 4;
+}

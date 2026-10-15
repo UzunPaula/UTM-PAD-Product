@@ -7,11 +7,13 @@ ProducerSettings settings = new()
     ProducerId = builder.Configuration["Producer:Id"] ?? "producer-1",
     BrokerHost = builder.Configuration["Broker:Host"] ?? "127.0.0.1",
     BrokerPort = builder.Configuration.GetValue("Broker:Port", 5000),
+    BrokerAddress = builder.Configuration["Broker:GrpcAddress"] ?? "http://127.0.0.1:5001",
     RequestTimeoutMilliseconds = builder.Configuration.GetValue("Broker:RequestTimeoutMilliseconds", 3000)
 };
 
 builder.Services.AddSingleton(settings);
-builder.Services.AddSingleton<TcpClientService>();
+builder.Services.AddSingleton<TcpClientService>();   // rămâne, pentru /api/status
+builder.Services.AddSingleton<GrpcClientService>();  // nou, pentru publicare
 builder.Services.AddSingleton<Producer>();
 WebApplication app = builder.Build();
 
