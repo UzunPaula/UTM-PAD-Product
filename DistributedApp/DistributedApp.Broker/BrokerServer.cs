@@ -11,16 +11,44 @@ public sealed class BrokerServer
     private static readonly TimeSpan AckTimeout = TimeSpan.FromSeconds(2);
     private readonly object _sync = new();
     private readonly TcpListener _listener;
-    private readonly string _stateFile = Path.Combine(AppContext.BaseDirectory, "broker-state.json");
+    private readonly string _stateFile;
     private readonly Dictionary<string, ConsumerConnection> _onlineConsumers = [];
     private BrokerState _state;
     private bool _running;
     private Thread? _deliveryThread;
 
-    public BrokerServer(int port)
+    public BrokerServer(int port, string? stateFile = null)
     {
         _listener = new TcpListener(IPAddress.Any, port);
+        _stateFile = stateFile ?? ResolveStatePath(null, AppContext.BaseDirectory);
         _state = LoadState();
+    }
+
+    public static string ResolveStatePath(string? configuredPath, string baseDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+            return Path.GetFullPath(configuredPath);
+
+        for (DirectoryInfo? directory = new(baseDirectory); directory is not null; directory = directory.Parent)
+        {
+            // În clonă, găsim rădăcina prin soluție, indiferent de directorul de pornire.
+            if (!File.Exists(Path.Combine(directory.FullName, "DistributedApp", "DistributedApp.sln")))
+                continue;
+
+            string target = Path.Combine(directory.FullName, "data", "broker-state.json");
+            string legacy = Path.Combine(baseDirectory, "broker-state.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+
+            // Starea veche din bin se copiază doar dacă nu există deja cea nouă.
+            if (File.Exists(legacy) && !File.Exists(target))
+                File.Copy(legacy, target, overwrite: false);
+
+            return target;
+        }
+
+        // La publicarea aplicației în afara clonei, folosim datele locale ale utilizatorului.
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DistributedApp", "Broker", "broker-state.json");
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -68,7 +96,7 @@ public sealed class BrokerServer
                 switch (message.Type)
                 {
                     case MessageType.Publish:
-                        Publish(message);
+                        PublishIdempotent(message);
                         await connection.SendAsync(Reply(message, MessageType.Ack), token);
                         break;
 
@@ -110,13 +138,24 @@ public sealed class BrokerServer
         }
     }
 
-    private void Publish(Message message)
+    // Același MessageId acceptat anterior nu creează încă o publicație.
+    public bool PublishIdempotent(Message message)
     {
         if (string.IsNullOrWhiteSpace(message.SenderId))
             message.SenderId = "producer-" + Guid.NewGuid().ToString("N")[..8];
 
         lock (_sync)
         {
+            // Verificarea și adăugarea sunt atomice față de celelalte conexiuni.
+            Message? existing = _state.PublishedMessages.FirstOrDefault(x => x.MessageId == message.MessageId);
+            if (existing is not null)
+            {
+                if (existing.CorrelationId != message.CorrelationId || existing.Topic != message.Topic
+                    || existing.Payload != message.Payload || existing.SenderId != message.SenderId)
+                    throw new InvalidOperationException("MessageId is already used for different content.");
+                return true;
+            }
+
             _state.PublishedMessages.Add(message);
             foreach (Subscription subscription in _state.Subscriptions.Where(x => x.Topic == message.Topic))
                 AddDeliveryIfMissing(message, subscription.ConsumerId);
@@ -124,6 +163,13 @@ public sealed class BrokerServer
         }
 
         Console.WriteLine($"PUBLISH: {message.MessageId} from {message.SenderId}");
+        return false;
+    }
+
+    public bool ContainsPublished(Guid messageId)
+    {
+        lock (_sync)
+            return _state.PublishedMessages.Any(x => x.MessageId == messageId);
     }
 
     private string Subscribe(Message message, ConsumerConnection connection)
@@ -336,22 +382,19 @@ public sealed class BrokerServer
 
     private BrokerState LoadState()
     {
-        try
-        {
-            return File.Exists(_stateFile)
-                ? MessageJson.Deserialize<BrokerState>(File.ReadAllText(_stateFile))
-                : new BrokerState();
-        }
-        catch
-        {
-            return new BrokerState();
-        }
+        // O stare coruptă nu devine „stare goală”: s-ar pierde evidența deduplicării.
+        return File.Exists(_stateFile)
+            ? MessageJson.Deserialize<BrokerState>(File.ReadAllText(_stateFile))
+            : new BrokerState();
     }
 
     private void SaveState()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_stateFile)!);
-        File.WriteAllText(_stateFile, MessageJson.Serialize(_state));
+        // Scriem întâi într-un fișier temporar, apoi înlocuim fișierul de stare.
+        string temporaryFile = _stateFile + ".tmp";
+        File.WriteAllText(temporaryFile, MessageJson.Serialize(_state));
+        File.Move(temporaryFile, _stateFile, true);
     }
 }
 
