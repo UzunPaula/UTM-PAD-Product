@@ -43,7 +43,7 @@ dotnet run --project DistributedApp/DistributedApp.Broker
 ```
 
 ```powershell
-dotnet run --project DistributedApp/DistributedApp.Consumer
+dotnet run --project DistributedApp/DistributedApp.Consumer -- consumer-a
 ```
 
 ```powershell
@@ -78,14 +78,17 @@ processing delay makes the in-flight transition visible during demonstration.
 
 The Broker persists queues and dead letters in
 `DistributedApp.Broker/data/broker-state.json` relative to its deployed
-settings file. The Consumer persists processed message identifiers in
-`DistributedApp.Consumer/data/consumer-state.json`.
+settings file. On Windows, the Consumer saves processed orders in
+`%LOCALAPPDATA%/DistributedApp/Consumer/consumer-<consumerId>.json`.
+Pass a distinct, stable `consumerId` to each Consumer instance (for example,
+`consumer-a` and `consumer-b`). Reuse that ID when restarting the same instance.
+Only one process can use a state file at a time. `CONSUMER_STATE_FILE` can
+override the location with an absolute path.
 
-Set `simulateCrashBeforeAcknowledgement` to `true` in
-`consumer.settings.json` to demonstrate the crash-before-ACK scenario. After
-the controlled crash, set it back to `false` and restart the Consumer. The
-Broker redelivers the same message, while Consumer deduplication prevents the
-order effect from being applied twice.
+Start the Consumer with `consumer-a producer-1 drop-ack-once` to simulate a
+saved order whose first ACK is lost. The Broker redelivers the message and
+Consumer deduplication prevents the order from being saved twice. Restarting
+with the same `consumerId` loads the same state file.
 
 ## Documentation
 

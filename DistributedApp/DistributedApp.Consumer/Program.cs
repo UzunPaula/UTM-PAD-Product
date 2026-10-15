@@ -4,7 +4,15 @@ using System.Text.Json;
 using DistributedApp.Consumer;
 using DistributedApp.Contracts;
 
-string consumerId = args.ElementAtOrDefault(0) ?? "consumer-1";
+if (args.Length == 0 || !ConsumerStateFiles.IsValidConsumerId(args[0]))
+{
+    Console.Error.WriteLine("Usage: consumer <consumerId> [topic] [fail|drop-ack-once]");
+    Console.Error.WriteLine("consumerId is required and may contain letters, digits, '.', '_' and '-'.");
+    Environment.ExitCode = 2;
+    return;
+}
+
+string consumerId = args[0];
 string topic = args.ElementAtOrDefault(1) ?? "producer-1";
 string mode = args.ElementAtOrDefault(2) ?? string.Empty;
 bool rejectMessages = mode.Equals("fail", StringComparison.OrdinalIgnoreCase);
@@ -12,9 +20,22 @@ bool dropAckOnce = mode.Equals("drop-ack-once", StringComparison.OrdinalIgnoreCa
 string brokerHost = Environment.GetEnvironmentVariable("CONSUMER_BROKER_HOST") ?? "127.0.0.1";
 int brokerPort = int.TryParse(Environment.GetEnvironmentVariable("CONSUMER_BROKER_PORT"), out int configuredPort)
     && configuredPort is > 0 and <= 65535 ? configuredPort : 5000;
-string stateFile = Environment.GetEnvironmentVariable("CONSUMER_STATE_FILE")
-    ?? Path.Combine(Directory.GetCurrentDirectory(), "data",
-        $"consumer-{Uri.EscapeDataString(consumerId)}.json");
+string stateFile;
+FileStream stateLock;
+try
+{
+    stateFile = ConsumerStateFiles.ResolvePath(
+        consumerId, Environment.GetEnvironmentVariable("CONSUMER_STATE_FILE"));
+    stateLock = ConsumerStateFiles.AcquireExclusiveLock(stateFile);
+}
+catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+{
+    Console.Error.WriteLine($"Cannot open Consumer state: {exception.Message}");
+    Environment.ExitCode = 2;
+    return;
+}
+
+using FileStream heldStateLock = stateLock;
 ProcessedMessageStore store = new(stateFile);
 
 using CancellationTokenSource stop = new();

@@ -69,6 +69,37 @@ public sealed class ProcessedMessageStoreTests
         Assert.False(File.Exists(file));
     }
 
+    [Fact]
+    public void DefaultStatePathIsIndependentOfWorkingDirectory()
+    {
+        string consumerId = "consumer-stable";
+        string expected = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DistributedApp", "Consumer", $"consumer-{consumerId}.json");
+
+        Assert.Equal(expected, ConsumerStateFiles.ResolvePath(consumerId));
+        Assert.NotEqual(ConsumerStateFiles.ResolvePath("consumer-other"), expected);
+        Assert.Throws<ArgumentException>(() => ConsumerStateFiles.ResolvePath(consumerId, "relative-state.json"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("../consumer")]
+    [InlineData("consumer/one")]
+    public void ConsumerIdMustBeExplicitAndSafe(string? consumerId)
+    {
+        Assert.False(ConsumerStateFiles.IsValidConsumerId(consumerId));
+    }
+
+    [Fact]
+    public void StateFileCannotBeHeldByTwoProcessesAtOnce()
+    {
+        string file = NewStateFile();
+        using FileStream first = ConsumerStateFiles.AcquireExclusiveLock(file);
+        Assert.Throws<IOException>(() => ConsumerStateFiles.AcquireExclusiveLock(file));
+    }
+
     private static string NewStateFile() => Path.Combine(
         Path.GetTempPath(), "distributedapp-consumer-tests", Guid.NewGuid().ToString("N"), "state.json");
 }
