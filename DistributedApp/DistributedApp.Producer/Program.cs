@@ -7,11 +7,13 @@ ProducerSettings settings = new()
     ProducerId = builder.Configuration["Producer:Id"] ?? "producer-1",
     BrokerHost = builder.Configuration["Broker:Host"] ?? "127.0.0.1",
     BrokerPort = builder.Configuration.GetValue("Broker:Port", 5000),
+    BrokerAddress = builder.Configuration["Broker:GrpcAddress"] ?? "http://127.0.0.1:5001",
     RequestTimeoutMilliseconds = builder.Configuration.GetValue("Broker:RequestTimeoutMilliseconds", 3000)
 };
 
 builder.Services.AddSingleton(settings);
-builder.Services.AddSingleton<TcpClientService>();
+builder.Services.AddSingleton<TcpClientService>();   // rămâne, pentru /api/status
+builder.Services.AddSingleton<GrpcClientService>();  // nou, pentru publicare
 builder.Services.AddSingleton<Producer>();
 WebApplication app = builder.Build();
 
@@ -21,12 +23,19 @@ app.UseStaticFiles(new StaticFileOptions
     OnPrepareResponse = context => context.Context.Response.Headers.CacheControl = "no-store"
 });
 
-app.MapPost("/api/orders", async (OrderPayload order, Producer producer, CancellationToken token) =>
+app.MapPost("/api/orders", async (
+    OrderPayload order, Producer producer, CancellationToken token, bool simulateLostResponse = false) =>
 {
     try
     {
-        PublishResult result = await producer.PublishOrderAsync(order, token);
-        return result.Accepted ? Results.Ok(result) : Results.BadRequest(result);
+        PublishResult result = await producer.PublishOrderAsync(order, token, simulateLostResponse);
+        // Un timeout după publicare nu dovedește respingerea: păstrăm rezultatul ambiguu explicit.
+        return result.Outcome switch
+        {
+            PublishOutcome.Accepted or PublishOutcome.Duplicate => Results.Ok(result),
+            PublishOutcome.Unknown => Results.Json(result, statusCode: StatusCodes.Status504GatewayTimeout),
+            _ => Results.BadRequest(result)
+        };
     }
     catch
     {

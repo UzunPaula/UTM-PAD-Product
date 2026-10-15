@@ -101,7 +101,17 @@ public sealed class BrokerServer
                         break;
 
                     case MessageType.Subscribe:
-                        registeredConsumer = Subscribe(message, connection);
+                        // O conexiune reprezintă un singur Consumer; un abonament respins închide conexiunea.
+                        if (registeredConsumer is not null)
+                        {
+                            connection.Send(Reply(message, MessageType.Nack, "Connection is already subscribed."));
+                            Console.WriteLine($"SUBSCRIBE REJECTED: {connection.RemoteEndpoint} is already registered");
+                            return;
+                        }
+
+                        string? consumerId = Subscribe(message, connection);
+                        if (consumerId is null) return;
+                        registeredConsumer = consumerId;
                         break;
 
                     case MessageType.Ack:
@@ -172,15 +182,27 @@ public sealed class BrokerServer
             return _state.PublishedMessages.Any(x => x.MessageId == messageId);
     }
 
-    private string Subscribe(Message message, ConsumerConnection connection)
+    private string? Subscribe(Message message, ConsumerConnection connection)
     {
-        string consumerId = string.IsNullOrWhiteSpace(message.SenderId)
-            ? "consumer-" + Guid.NewGuid().ToString("N")[..8]
-            : message.SenderId;
+        if (string.IsNullOrWhiteSpace(message.SenderId) || string.IsNullOrWhiteSpace(message.Topic)
+            || message.MessageId == Guid.Empty || message.CorrelationId == Guid.Empty)
+        {
+            connection.Send(Reply(message, MessageType.Nack, "ConsumerId, topic and request IDs are required."));
+            return null;
+        }
+
+        string consumerId = message.SenderId;
 
         lock (_sync)
         {
-            _onlineConsumers[consumerId] = connection;
+            // Verificarea și înregistrarea sunt atomice: a doua conexiune nu o înlocuiește pe prima.
+            if (_onlineConsumers.TryGetValue(consumerId, out ConsumerConnection? active))
+            {
+                connection.Send(Reply(message, MessageType.Nack, "ConsumerId is already connected."));
+                Console.WriteLine($"SUBSCRIBE REJECTED: {consumerId} is already active at {active.RemoteEndpoint}");
+                return null;
+            }
+
             if (!_state.Subscriptions.Any(x => x.ConsumerId == consumerId && x.Topic == message.Topic))
                 _state.Subscriptions.Add(new Subscription { ConsumerId = consumerId, Topic = message.Topic });
 
@@ -201,6 +223,18 @@ public sealed class BrokerServer
                 Console.WriteLine($"AUTO REDRIVE: {delivery.Message.MessageId} for {consumerId}");
             }
             SaveState();
+
+            // ACK-ul precedă orice livrare: DeliveryLoop nu poate lua _sync până la trimiterea lui.
+            _onlineConsumers[consumerId] = connection;
+            try
+            {
+                connection.Send(Reply(message, MessageType.Ack));
+            }
+            catch
+            {
+                _onlineConsumers.Remove(consumerId);
+                throw;
+            }
         }
 
         Console.WriteLine($"SUBSCRIBE: {consumerId} -> {message.Topic} at {connection.RemoteEndpoint}");

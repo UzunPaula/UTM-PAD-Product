@@ -207,6 +207,7 @@ function renderHistory() {
             published: { label: "Publicat", className: "pending" },
             delivered: { label: "Livrat", className: "success" },
             "dead-letter": { label: "Dead-letter", className: "error" },
+            unknown: { label: "Necunoscut", className: "pending" },
             failed: { label: "Respins", className: "error" }
         };
         const state = states[item.state] || states.failed;
@@ -242,6 +243,12 @@ async function submitOrder(event) {
             body: JSON.stringify(order)
         });
         const result = await response.json().catch(() => ({}));
+        if (result.outcome === "Unknown") {
+            const detail = `${result.reason || "Nu se poate confirma rezultatul."} messageId: ${result.messageId || "necomunicat"}`;
+            showResult(false, "Starea comenzii este necunoscută.", detail);
+            history.unshift({ ...order, state: "unknown", messageId: result.messageId, detail });
+            return;
+        }
         if (!response.ok || result.accepted === false) {
             throw new Error(result.reason || `Cererea a fost respinsă (HTTP ${response.status}).`);
         }
