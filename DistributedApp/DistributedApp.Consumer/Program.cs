@@ -1,8 +1,8 @@
-using System.Net.Sockets;
-using System.Text;
-using System.Text.Json;
+using DistributedApp.Broker.Grpc.V1;
 using DistributedApp.Consumer;
 using DistributedApp.Contracts;
+using Grpc.Core;
+using Grpc.Net.Client;
 
 if (args.Length == 0 || !ConsumerStateFiles.IsValidConsumerId(args[0]))
 {
@@ -17,9 +17,8 @@ string topic = args.ElementAtOrDefault(1) ?? "producer-1";
 string mode = args.ElementAtOrDefault(2) ?? string.Empty;
 bool rejectMessages = mode.Equals("fail", StringComparison.OrdinalIgnoreCase);
 bool dropAckOnce = mode.Equals("drop-ack-once", StringComparison.OrdinalIgnoreCase);
-string brokerHost = Environment.GetEnvironmentVariable("CONSUMER_BROKER_HOST") ?? "127.0.0.1";
-int brokerPort = int.TryParse(Environment.GetEnvironmentVariable("CONSUMER_BROKER_PORT"), out int configuredPort)
-    && configuredPort is > 0 and <= 65535 ? configuredPort : 5000;
+string brokerAddress = Environment.GetEnvironmentVariable("CONSUMER_BROKER_GRPC_ADDRESS")
+    ?? "http://127.0.0.1:5001";
 string stateFile;
 FileStream stateLock;
 try
@@ -37,6 +36,8 @@ catch (Exception exception) when (exception is IOException or UnauthorizedAccess
 
 using FileStream heldStateLock = stateLock;
 ProcessedMessageStore store = new(stateFile);
+using GrpcChannel channel = GrpcChannel.ForAddress(brokerAddress);
+BrokerRpcV1.BrokerRpcV1Client broker = new(channel);
 
 using CancellationTokenSource stop = new();
 Console.CancelKeyPress += (_, eventArgs) =>
@@ -47,7 +48,7 @@ Console.CancelKeyPress += (_, eventArgs) =>
 
 Console.WriteLine($"CONSUMER ID: {consumerId}");
 Console.WriteLine($"SUBSCRIBED TOPIC: {topic}");
-Console.WriteLine($"BROKER: {brokerHost}:{brokerPort}");
+Console.WriteLine($"BROKER: {brokerAddress}");
 Console.WriteLine($"STATE FILE: {Path.GetFullPath(stateFile)}");
 Console.WriteLine(rejectMessages ? "MODE: NACK" : dropAckOnce ? "MODE: DROP FIRST ACK" : "MODE: ACK");
 
@@ -55,7 +56,7 @@ while (!stop.IsCancellationRequested)
 {
     try
     {
-        if (!await RunConnectionAsync(stop.Token))
+        if (!await RunSubscriptionAsync(stop.Token))
         {
             Environment.ExitCode = 2;
             break;
@@ -66,7 +67,11 @@ while (!stop.IsCancellationRequested)
     {
         break;
     }
-    catch (Exception exception) when (exception is SocketException or IOException)
+    catch (RpcException exception) when (exception.StatusCode == StatusCode.Cancelled && stop.IsCancellationRequested)
+    {
+        break;
+    }
+    catch (Exception exception) when (exception is RpcException or IOException)
     {
         Console.WriteLine($"Broker unavailable: {exception.Message}");
     }
@@ -81,78 +86,64 @@ while (!stop.IsCancellationRequested)
     }
 }
 
-async Task<bool> RunConnectionAsync(CancellationToken cancellationToken)
+async Task<bool> RunSubscriptionAsync(CancellationToken cancellationToken)
 {
-    using TcpClient client = new();
-    await client.ConnectAsync(brokerHost, brokerPort, cancellationToken);
-    Console.WriteLine($"CONNECTED: {client.Client.LocalEndPoint}");
-
-    await using NetworkStream stream = client.GetStream();
-    using StreamReader reader = new(stream, Encoding.UTF8, false, leaveOpen: true);
-    await using StreamWriter writer = new(stream, new UTF8Encoding(false), leaveOpen: true)
+    SubscribeConsumerRequest request = new()
     {
-        AutoFlush = true,
-        NewLine = "\n"
+        RequestId = Guid.NewGuid().ToString(),
+        ConsumerId = consumerId,
+        Topic = topic,
+        SchemaVersion = "1.0"
     };
+    using AsyncServerStreamingCall<ConsumerEvent> stream = broker.SubscribeConsumer(request,
+        cancellationToken: cancellationToken);
 
-    Message subscription = new()
-    {
-        Type = MessageType.Subscribe,
-        SenderId = consumerId,
-        Topic = topic
-    };
-    await writer.WriteLineAsync(MessageJson.Serialize(subscription).AsMemory(), cancellationToken);
-
-    string confirmationLine = await reader.ReadLineAsync(cancellationToken)
-        ?? throw new IOException("Broker disconnected before confirming the subscription.");
-    Message confirmation;
+    bool hasFirstEvent;
     try
     {
-        confirmation = MessageJson.Deserialize<Message>(confirmationLine);
+        hasFirstEvent = await stream.ResponseStream.MoveNext(cancellationToken);
     }
-    catch (JsonException exception)
+    catch (RpcException exception) when (exception.StatusCode is StatusCode.AlreadyExists
+                                      or StatusCode.InvalidArgument or StatusCode.FailedPrecondition)
     {
-        throw new IOException("Broker sent an invalid subscription response.", exception);
-    }
-
-    if (confirmation.RelatedMessageId != subscription.MessageId
-        || confirmation.Type is not (MessageType.Ack or MessageType.Nack))
-        throw new IOException("Broker sent a response for a different subscription request.");
-
-    if (confirmation.Type == MessageType.Nack)
-    {
-        Console.Error.WriteLine($"SUBSCRIBE REJECTED: {confirmation.Reason ?? "No reason provided."}");
+        Console.Error.WriteLine($"SUBSCRIBE REJECTED: {exception.Status.Detail}");
         return false;
     }
 
+    if (!hasFirstEvent || stream.ResponseStream.Current.EventCase != ConsumerEvent.EventOneofCase.Subscribed)
+        throw new IOException("Broker disconnected before confirming the subscription.");
+
+    SubscriptionAccepted confirmation = stream.ResponseStream.Current.Subscribed;
+    if (confirmation.RequestId != request.RequestId || confirmation.SchemaVersion != request.SchemaVersion
+        || !Guid.TryParse(confirmation.SessionId, out _))
+        throw new IOException("Broker sent an invalid subscription confirmation.");
+
+    string sessionId = confirmation.SessionId;
     Console.WriteLine($"SUBSCRIBED: {consumerId} -> {topic}");
 
-    while (await reader.ReadLineAsync(cancellationToken) is { } line)
+    while (await stream.ResponseStream.MoveNext(cancellationToken))
     {
-        Message message;
-        try
-        {
-            message = MessageJson.Deserialize<Message>(line);
-        }
-        catch (JsonException exception)
-        {
-            Console.WriteLine($"INVALID JSON: {exception.Message}");
-            continue;
-        }
+        ConsumerEvent item = stream.ResponseStream.Current;
+        if (item.EventCase != ConsumerEvent.EventOneofCase.Delivery)
+            throw new IOException("Broker sent an unexpected consumer event.");
 
-        if (message.Type != MessageType.Delivery) continue;
-        if (message.MessageId == Guid.Empty) continue;
+        DeliveryMessage message = item.Delivery;
+        if (message.SchemaVersion != request.SchemaVersion)
+            throw new IOException("Broker sent an unsupported delivery schema version.");
+        if (!Guid.TryParse(message.MessageId, out Guid messageId)
+            || !Guid.TryParse(message.CorrelationId, out Guid correlationId))
+            throw new IOException("Broker sent a delivery with invalid identifiers.");
 
         ProcessingResult result;
-        if (message.Topic != topic || message.CorrelationId == Guid.Empty)
-            result = ProcessingResult.Failed("Delivery topic or CorrelationId is invalid.");
+        if (message.Topic != topic)
+            result = ProcessingResult.Failed("Delivery topic is invalid.");
         else if (rejectMessages)
             result = ProcessingResult.Failed("Consumer started in FAIL mode.");
         else
         {
             try
             {
-                result = await store.ProcessAsync(message.MessageId, message.Payload, cancellationToken);
+                result = await store.ProcessAsync(messageId, message.Payload, cancellationToken);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -160,7 +151,7 @@ async Task<bool> RunConnectionAsync(CancellationToken cancellationToken)
             }
         }
 
-        Console.WriteLine($"RECEIVED: {message.MessageId} | {message.Payload} | "
+        Console.WriteLine($"RECEIVED: {messageId} | {message.Payload} | "
             + (result.NewlyProcessed ? "processed" : result.Accepted ? "already processed" : "rejected"));
 
         if (dropAckOnce && result.NewlyProcessed)
@@ -170,16 +161,20 @@ async Task<bool> RunConnectionAsync(CancellationToken cancellationToken)
             continue;
         }
 
-        Message response = new()
+        DeliveryAckReply reply = await broker.AcknowledgeDeliveryAsync(new DeliveryAckRequest
         {
-            Type = result.Accepted ? MessageType.Ack : MessageType.Nack,
-            SenderId = consumerId,
-            Topic = message.Topic,
-            RelatedMessageId = message.MessageId,
-            CorrelationId = message.CorrelationId,
-            Reason = result.Reason
-        };
-        await writer.WriteLineAsync(MessageJson.Serialize(response).AsMemory(), cancellationToken);
+            RequestId = Guid.NewGuid().ToString(),
+            MessageId = messageId.ToString(),
+            CorrelationId = correlationId.ToString(),
+            ConsumerId = consumerId,
+            SessionId = sessionId,
+            Accepted = result.Accepted,
+            Reason = result.Reason ?? string.Empty,
+            SchemaVersion = request.SchemaVersion
+        }, deadline: DateTime.UtcNow.AddSeconds(3), cancellationToken: cancellationToken);
+        if (reply.SchemaVersion != request.SchemaVersion)
+            throw new IOException("Broker sent an unsupported acknowledgement schema version.");
+
         Console.WriteLine(result.Accepted ? "ACK sent" : $"NACK sent: {result.Reason}");
     }
 

@@ -1,13 +1,16 @@
+extern alias ConsumerApp;
+
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using DistributedApp.Broker;
 using DistributedApp.Broker.Grpc.V1;
-using DistributedApp.Consumer;
 using DistributedApp.Contracts;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Xunit;
+using ProcessedMessageStore = ConsumerApp::DistributedApp.Consumer.ProcessedMessageStore;
+using ProcessingResult = ConsumerApp::DistributedApp.Consumer.ProcessingResult;
 
 namespace DistributedApp.Broker.Lab2.Tests;
 

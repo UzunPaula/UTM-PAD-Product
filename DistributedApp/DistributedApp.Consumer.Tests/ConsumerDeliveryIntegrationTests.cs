@@ -1,11 +1,18 @@
+extern alias BrokerApp;
+
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
+using DistributedApp.Broker.Grpc.V1;
 using DistributedApp.Consumer;
 using DistributedApp.Contracts;
+using Grpc.Core;
+using Grpc.Net.Client;
 using Xunit;
+using BrokerServer = BrokerApp::DistributedApp.Broker.BrokerServer;
+using BrokerState = BrokerApp::DistributedApp.Broker.BrokerState;
+using BrokerDeliveryStatus = BrokerApp::DistributedApp.Broker.DeliveryStatus;
 
 namespace DistributedApp.Consumer.Tests;
 
@@ -26,203 +33,128 @@ public sealed class ConsumerDeliveryIntegrationTests
     [Fact]
     public async Task RestartAfterLostAckDoesNotProcessOrderTwice()
     {
-        using TcpListener broker = NewBroker();
-        string stateFile = NewStateFile();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
-        Message delivery = NewDelivery();
-        Process? consumer = null;
-
+        using TestBroker broker = await TestBroker.StartAsync();
+        string consumerState = NewStateFile();
+        Process? consumer = StartConsumer(broker, "consumer-restart", consumerState, "drop-ack-once");
         try
         {
-            consumer = StartConsumer(broker, "consumer-restart", stateFile, "drop-ack-once");
-            using (TcpClient firstConnection = await broker.AcceptTcpClientAsync(timeout.Token))
-            {
-                await using NetworkStream firstStream = firstConnection.GetStream();
-                using StreamReader reader = NewReader(firstStream);
-                await using StreamWriter writer = NewWriter(firstStream);
-                Message subscription = await ReadMessage(reader, timeout.Token);
-                Assert.Equal("consumer-restart", subscription.SenderId);
-                await ConfirmSubscription(writer, subscription);
+            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-restart"));
+            PublishRequest publication = await broker.PublishAsync();
+            await WaitUntilAsync(() => File.Exists(consumerState)
+                && ReadOrders(consumerState).ContainsKey(Guid.Parse(publication.MessageId)));
+            await StopConsumerAsync(consumer);
+            consumer = null;
 
-                await writer.WriteLineAsync(MessageJson.Serialize(delivery));
-                Task<string?> response = reader.ReadLineAsync(timeout.Token).AsTask();
-                await Task.Delay(500, timeout.Token);
-                Assert.False(response.IsCompleted, "The first ACK should be deliberately lost.");
-
-                await StopConsumer(consumer);
-                consumer = null;
-            }
-
-            Assert.Single(ReadOrders(stateFile));
-
-            consumer = StartConsumer(broker, "consumer-restart", stateFile);
-            using TcpClient secondConnection = await broker.AcceptTcpClientAsync(timeout.Token);
-            await using NetworkStream secondStream = secondConnection.GetStream();
-            using StreamReader secondReader = NewReader(secondStream);
-            await using StreamWriter secondWriter = NewWriter(secondStream);
-            Message secondSubscription = await ReadMessage(secondReader, timeout.Token);
-            Assert.Equal("consumer-restart", secondSubscription.SenderId);
-            await ConfirmSubscription(secondWriter, secondSubscription);
-
-            await secondWriter.WriteLineAsync(MessageJson.Serialize(delivery));
-            Message acknowledgement = await ReadMessage(secondReader, timeout.Token);
-            Assert.Equal(MessageType.Ack, acknowledgement.Type);
-            Assert.Equal(delivery.MessageId, acknowledgement.RelatedMessageId);
-            Assert.Single(ReadOrders(stateFile));
+            consumer = StartConsumer(broker, "consumer-restart", consumerState);
+            await broker.WaitForAsync(state => state.Acknowledgements.Any(x =>
+                x.MessageId == Guid.Parse(publication.MessageId) && x.ConsumerId == "consumer-restart"));
+            Assert.Single(ReadOrders(consumerState));
         }
         finally
         {
-            if (consumer is not null) await StopConsumer(consumer);
+            if (consumer is not null) await StopConsumerAsync(consumer);
         }
     }
 
     [Fact]
     public async Task TwoConsumersWithDifferentIdsProcessTheirOwnDeliveries()
     {
-        using TcpListener broker = NewBroker();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
-        string firstFile = NewStateFile();
-        string secondFile = NewStateFile();
-        Message delivery = NewDelivery();
-        Process first = StartConsumer(broker, "consumer-a", firstFile);
+        using TestBroker broker = await TestBroker.StartAsync();
+        string firstState = NewStateFile();
+        string secondState = NewStateFile();
+        Process first = StartConsumer(broker, "consumer-a", firstState);
         Process? second = null;
-
         try
         {
-            using TcpClient firstConnection = await broker.AcceptTcpClientAsync(timeout.Token);
-            await using NetworkStream firstStream = firstConnection.GetStream();
-            using StreamReader firstReader = NewReader(firstStream);
-            await using StreamWriter firstWriter = NewWriter(firstStream);
-            Message firstSubscription = await ReadMessage(firstReader, timeout.Token);
-            Assert.Equal("consumer-a", firstSubscription.SenderId);
-            await ConfirmSubscription(firstWriter, firstSubscription);
+            second = StartConsumer(broker, "consumer-b", secondState);
+            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-a")
+                && state.Subscriptions.Any(x => x.ConsumerId == "consumer-b"));
+            PublishRequest publication = await broker.PublishAsync();
+            Guid messageId = Guid.Parse(publication.MessageId);
+            await broker.WaitForAsync(state => state.Acknowledgements.Count(x => x.MessageId == messageId) == 2);
 
-            second = StartConsumer(broker, "consumer-b", secondFile);
-            using TcpClient secondConnection = await broker.AcceptTcpClientAsync(timeout.Token);
-            await using NetworkStream secondStream = secondConnection.GetStream();
-            using StreamReader secondReader = NewReader(secondStream);
-            await using StreamWriter secondWriter = NewWriter(secondStream);
-            Message secondSubscription = await ReadMessage(secondReader, timeout.Token);
-            Assert.Equal("consumer-b", secondSubscription.SenderId);
-            await ConfirmSubscription(secondWriter, secondSubscription);
-
-            await firstWriter.WriteLineAsync(MessageJson.Serialize(delivery));
-            await secondWriter.WriteLineAsync(MessageJson.Serialize(delivery));
-
-            Assert.Equal(MessageType.Ack, (await ReadMessage(firstReader, timeout.Token)).Type);
-            Assert.Equal(MessageType.Ack, (await ReadMessage(secondReader, timeout.Token)).Type);
-            Assert.Single(ReadOrders(firstFile));
-            Assert.Single(ReadOrders(secondFile));
+            Assert.True(ReadOrders(firstState).ContainsKey(messageId));
+            Assert.True(ReadOrders(secondState).ContainsKey(messageId));
+            Assert.Single(ReadOrders(firstState));
+            Assert.Single(ReadOrders(secondState));
         }
         finally
         {
-            await StopConsumer(first);
-            if (second is not null) await StopConsumer(second);
+            await StopConsumerAsync(first);
+            if (second is not null) await StopConsumerAsync(second);
         }
     }
 
     [Fact]
     public async Task SecondProcessWithSameStateFileExitsBeforeSubscribing()
     {
-        using TcpListener broker = NewBroker();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        using TestBroker broker = await TestBroker.StartAsync();
         string stateFile = NewStateFile();
         Process first = StartConsumer(broker, "consumer-same", stateFile);
         Process? second = null;
-
         try
         {
-            using TcpClient connection = await broker.AcceptTcpClientAsync(timeout.Token);
-            await using NetworkStream stream = connection.GetStream();
-            using StreamReader reader = NewReader(stream);
-            await using StreamWriter writer = NewWriter(stream);
-            Message subscription = await ReadMessage(reader, timeout.Token);
-            Assert.Equal("consumer-same", subscription.SenderId);
-            await ConfirmSubscription(writer, subscription);
-
+            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-same"));
             second = StartConsumer(broker, "consumer-same", stateFile);
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
             await second.WaitForExitAsync(timeout.Token);
             Assert.Equal(2, second.ExitCode);
             Assert.False(first.HasExited);
         }
         finally
         {
-            await StopConsumer(first);
-            if (second is not null) await StopConsumer(second);
+            await StopConsumerAsync(first);
+            if (second is not null) await StopConsumerAsync(second);
         }
     }
 
     [Fact]
-    public async Task SubscriptionNackShowsReasonWithoutClaimingSubscription()
+    public async Task BrokerRejectionDoesNotClaimSubscription()
     {
-        using TcpListener broker = NewBroker();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
-        string stateFile = NewStateFile();
-        Process consumer = StartConsumer(broker, "consumer-rejected", stateFile);
-
+        using TestBroker broker = await TestBroker.StartAsync();
+        Process first = StartConsumer(broker, "consumer-duplicate", NewStateFile());
+        Process? second = null;
         try
         {
-            using TcpClient connection = await broker.AcceptTcpClientAsync(timeout.Token);
-            await using NetworkStream stream = connection.GetStream();
-            using StreamReader reader = NewReader(stream);
-            await using StreamWriter writer = NewWriter(stream);
-            Message subscription = await ReadMessage(reader, timeout.Token);
-            await ConfirmSubscription(writer, subscription, MessageType.Nack, "ConsumerId is already connected.");
-
-            await consumer.WaitForExitAsync(timeout.Token);
-            Assert.Equal(2, consumer.ExitCode);
+            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-duplicate"));
+            second = StartConsumer(broker, "consumer-duplicate", NewStateFile());
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            await second.WaitForExitAsync(timeout.Token);
+            Assert.Equal(2, second.ExitCode);
             Assert.Contains("SUBSCRIBE REJECTED: ConsumerId is already connected.",
-                await consumer.StandardError.ReadToEndAsync(timeout.Token));
-            Assert.DoesNotContain("SUBSCRIBED:", await consumer.StandardOutput.ReadToEndAsync(timeout.Token));
-            Assert.False(File.Exists(stateFile));
+                await second.StandardError.ReadToEndAsync(timeout.Token));
+            Assert.DoesNotContain("SUBSCRIBED:", await second.StandardOutput.ReadToEndAsync(timeout.Token));
+            Assert.False(first.HasExited);
         }
         finally
         {
-            await StopConsumer(consumer);
+            await StopConsumerAsync(first);
+            if (second is not null) await StopConsumerAsync(second);
         }
     }
 
     [Fact]
-    public async Task SubscriptionAckMustReferToTheSentRequest()
+    public async Task FailModeNacksDeliveryWithoutSavingOrder()
     {
-        using TcpListener broker = NewBroker();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
-        string stateFile = NewStateFile();
-        Process consumer = StartConsumer(broker, "consumer-wrong-ack", stateFile);
-
+        using TestBroker broker = await TestBroker.StartAsync();
+        string consumerState = NewStateFile();
+        Process consumer = StartConsumer(broker, "consumer-fail", consumerState, "fail");
         try
         {
-            using TcpClient connection = await broker.AcceptTcpClientAsync(timeout.Token);
-            await using NetworkStream stream = connection.GetStream();
-            using StreamReader reader = NewReader(stream);
-            await using StreamWriter writer = NewWriter(stream);
-            Message subscription = await ReadMessage(reader, timeout.Token);
-            await writer.WriteLineAsync(MessageJson.Serialize(new Message
-            {
-                Type = MessageType.Ack,
-                SenderId = "broker",
-                Topic = subscription.Topic,
-                RelatedMessageId = Guid.NewGuid(),
-                CorrelationId = subscription.CorrelationId
-            }));
-
-            Assert.Null(await reader.ReadLineAsync(timeout.Token));
-            Assert.False(File.Exists(stateFile));
+            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-fail"));
+            PublishRequest publication = await broker.PublishAsync();
+            await broker.WaitForAsync(state => state.Deliveries.Any(x =>
+                x.Message.MessageId == Guid.Parse(publication.MessageId)
+                && x.ConsumerId == "consumer-fail" && x.Status == BrokerDeliveryStatus.DeadLetter));
+            Assert.False(File.Exists(consumerState));
         }
         finally
         {
-            await StopConsumer(consumer);
+            await StopConsumerAsync(consumer);
         }
     }
 
-    private static TcpListener NewBroker()
-    {
-        TcpListener broker = new(IPAddress.Loopback, 0);
-        broker.Start();
-        return broker;
-    }
-
-    private static Process StartConsumer(TcpListener broker, string consumerId, string stateFile, string? mode = null)
+    private static Process StartConsumer(TestBroker broker, string consumerId, string stateFile, string? mode = null)
     {
         ProcessStartInfo start = new("dotnet")
         {
@@ -235,53 +167,123 @@ public sealed class ConsumerDeliveryIntegrationTests
         start.ArgumentList.Add(consumerId);
         start.ArgumentList.Add("producer-1");
         if (mode is not null) start.ArgumentList.Add(mode);
-        start.Environment["CONSUMER_BROKER_HOST"] = "127.0.0.1";
-        start.Environment["CONSUMER_BROKER_PORT"] = ((IPEndPoint)broker.LocalEndpoint).Port.ToString();
+        start.Environment["CONSUMER_BROKER_GRPC_ADDRESS"] = broker.Address;
         start.Environment["CONSUMER_STATE_FILE"] = stateFile;
         return Process.Start(start) ?? throw new InvalidOperationException("Consumer did not start.");
     }
 
-    private static async Task StopConsumer(Process consumer)
+    private static async Task StopConsumerAsync(Process process)
     {
-        if (!consumer.HasExited) consumer.Kill(entireProcessTree: true);
-        await consumer.WaitForExitAsync();
-        consumer.Dispose();
+        if (!process.HasExited) process.Kill(entireProcessTree: true);
+        await process.WaitForExitAsync();
+        process.Dispose();
     }
 
-    private static StreamReader NewReader(NetworkStream stream) =>
-        new(stream, Encoding.UTF8, false, leaveOpen: true);
-
-    private static StreamWriter NewWriter(NetworkStream stream) =>
-        new(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true, NewLine = "\n" };
-
-    private static async Task<Message> ReadMessage(StreamReader reader, CancellationToken token) =>
-        MessageJson.Deserialize<Message>(await reader.ReadLineAsync(token) ?? throw new IOException("No message."));
-
-    private static Task ConfirmSubscription(StreamWriter writer, Message request,
-        MessageType responseType = MessageType.Ack, string? reason = null) =>
-        writer.WriteLineAsync(MessageJson.Serialize(new Message
-        {
-            Type = responseType,
-            SenderId = "broker",
-            Topic = request.Topic,
-            RelatedMessageId = request.MessageId,
-            CorrelationId = request.CorrelationId,
-            Reason = reason
-        }));
-
-    private static Message NewDelivery() => new()
+    private static async Task WaitUntilAsync(Func<bool> predicate)
     {
-        MessageId = Guid.NewGuid(),
-        CorrelationId = Guid.NewGuid(),
-        Type = MessageType.Delivery,
-        SenderId = "producer-1",
-        Topic = "producer-1",
-        Payload = JsonSerializer.Serialize(new OrderPayload("ORD-1", "Keyboard", "Mechanical"))
-    };
+        DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                if (predicate()) return;
+            }
+            catch (IOException) { }
+            await Task.Delay(100);
+        }
+        throw new TimeoutException("Expected Consumer state was not observed.");
+    }
 
     private static string NewStateFile() => Path.Combine(
         Path.GetTempPath(), "distributedapp-consumer-tests", Guid.NewGuid().ToString("N"), "state.json");
 
-    private static Dictionary<Guid, OrderPayload> ReadOrders(string stateFile) =>
-        JsonSerializer.Deserialize<Dictionary<Guid, OrderPayload>>(File.ReadAllText(stateFile))!;
+    private static Dictionary<Guid, OrderPayload> ReadOrders(string path) =>
+        JsonSerializer.Deserialize<Dictionary<Guid, OrderPayload>>(File.ReadAllText(path))!;
+
+    private sealed class TestBroker(Process process, int grpcPort, string stateFile) : IDisposable
+    {
+        public string Address => $"http://127.0.0.1:{grpcPort}";
+
+        public static async Task<TestBroker> StartAsync()
+        {
+            int grpcPort = FreePort();
+            string stateFile = NewStateFile();
+            ProcessStartInfo start = new("dotnet")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add(typeof(BrokerServer).Assembly.Location);
+            start.Environment["BROKER_GRPC_PORT"] = grpcPort.ToString();
+            start.Environment["BROKER_TCP_PORT"] = FreePort().ToString();
+            start.Environment["BROKER_STATE_FILE"] = stateFile;
+            TestBroker broker = new(Process.Start(start)
+                ?? throw new InvalidOperationException("Broker did not start."), grpcPort, stateFile);
+            try
+            {
+                using GrpcChannel channel = GrpcChannel.ForAddress(broker.Address);
+                BrokerRpcV1.BrokerRpcV1Client client = new(channel);
+                for (int attempt = 0; attempt < 50; attempt++)
+                {
+                    try
+                    {
+                        if ((await client.CheckHealthAsync(new HealthRequest(),
+                                deadline: DateTime.UtcNow.AddSeconds(1))).Status == "Healthy")
+                            return broker;
+                    }
+                    catch (RpcException) { }
+                    await Task.Delay(100);
+                }
+                throw new TimeoutException("Broker gRPC did not become healthy.");
+            }
+            catch
+            {
+                broker.Dispose();
+                throw;
+            }
+        }
+
+        public async Task<PublishRequest> PublishAsync()
+        {
+            PublishRequest publication = new()
+            {
+                RequestId = Guid.NewGuid().ToString(),
+                MessageId = Guid.NewGuid().ToString(),
+                CorrelationId = Guid.NewGuid().ToString(),
+                MessageType = "Publish",
+                SchemaVersion = "1.0",
+                OccurredAtUtc = DateTimeOffset.UtcNow.ToString("O"),
+                Topic = "producer-1",
+                Payload = MessageJson.Serialize(new OrderPayload("ORD-1", "Keyboard", "Mechanical")),
+                SenderId = "producer-1"
+            };
+            using GrpcChannel channel = GrpcChannel.ForAddress(Address);
+            BrokerRpcV1.BrokerRpcV1Client client = new(channel);
+            Assert.True((await client.PublishAsync(publication)).Accepted);
+            return publication;
+        }
+
+        public async Task WaitForAsync(Func<BrokerState, bool> predicate) =>
+            await WaitUntilAsync(() => File.Exists(stateFile)
+                && predicate(MessageJson.Deserialize<BrokerState>(File.ReadAllText(stateFile))));
+
+        public void Dispose()
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+            process.Dispose();
+        }
+
+        private static int FreePort()
+        {
+            TcpListener listener = new(IPAddress.Loopback, 0);
+            listener.Start();
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return port;
+        }
+    }
 }
