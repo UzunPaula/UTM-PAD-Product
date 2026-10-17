@@ -11,5 +11,9 @@
     <Compile Include="ProcessedMessageStore.cs" />
     <Compile Include="ConsumerStateFiles.cs" />
     <ProjectReference Include="..\DistributedApp.Contracts\DistributedApp.Contracts.csproj" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.27.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="all" />
+    <Protobuf Include="..\DistributedApp.Broker\Protos\broker.proto" Link="Protos\broker.proto" GrpcServices="Client" />
   </ItemGroup>
 </Project>

@@ -12,5 +12,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5" PrivateAssets="all" />
     <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
     <ProjectReference Include="../../DistributedApp/DistributedApp.Broker/DistributedApp.Broker.csproj" />
+    <ProjectReference Include="../../DistributedApp/DistributedApp.Producer/DistributedApp.Producer.csproj" Aliases="ProducerApp" />
+    <ProjectReference Include="../../DistributedApp/DistributedApp.Consumer/DistributedApp.Consumer.csproj" Aliases="ConsumerApp" />
   </ItemGroup>
 </Project>

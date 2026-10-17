@@ -81,6 +81,117 @@ public sealed class BrokerGrpcService(BrokerServer broker, ILogger<BrokerGrpcSer
             ObservedAtUtc = DateTimeOffset.UtcNow.ToString("O")
         });
 
+    public override async Task SubscribeConsumer(
+        SubscribeConsumerRequest request, IServerStreamWriter<ConsumerEvent> responseStream, ServerCallContext context)
+    {
+        if (request.SchemaVersion != ContractVersion)
+            throw Error(StatusCode.FailedPrecondition, "Unsupported schema version.");
+        if (!Guid.TryParse(request.RequestId, out Guid requestId)
+            || string.IsNullOrWhiteSpace(request.ConsumerId) || string.IsNullOrWhiteSpace(request.Topic))
+            throw Error(StatusCode.InvalidArgument, "request_id, consumer_id and topic are required.");
+
+        Message subscription = new()
+        {
+            MessageId = requestId,
+            CorrelationId = requestId,
+            Type = MessageType.Subscribe,
+            SenderId = request.ConsumerId,
+            Topic = request.Topic
+        };
+        GrpcConsumerConnection connection = new(context.Peer);
+        if (!broker.SubscribeGrpc(subscription, connection))
+        {
+            string reason = connection.RejectionReason ?? "Subscription was rejected.";
+            connection.Dispose();
+            throw Error(StatusCode.AlreadyExists, reason);
+        }
+
+        logger.LogInformation("broker_subscribe consumerId={ConsumerId} topic={Topic} sessionId={SessionId}",
+            request.ConsumerId, request.Topic, connection.SessionId);
+        try
+        {
+            // Primul eveniment confirmă abonarea; apoi vin doar livrările pentru acest Consumer.
+            await foreach (Message message in connection.Messages.ReadAllAsync(context.CancellationToken))
+            {
+                ConsumerEvent item = message.Type switch
+                {
+                    MessageType.Ack => new ConsumerEvent
+                    {
+                        Subscribed = new SubscriptionAccepted
+                        {
+                            RequestId = request.RequestId,
+                            SessionId = connection.SessionId,
+                            SchemaVersion = ContractVersion
+                        }
+                    },
+                    MessageType.Delivery => new ConsumerEvent
+                    {
+                        Delivery = new DeliveryMessage
+                        {
+                            MessageId = message.MessageId.ToString(),
+                            CorrelationId = message.CorrelationId.ToString(),
+                            SenderId = message.SenderId,
+                            Topic = message.Topic,
+                            Payload = message.Payload,
+                            SchemaVersion = ContractVersion
+                        }
+                    },
+                    _ => throw new InvalidOperationException("Unexpected consumer stream message.")
+                };
+                await responseStream.WriteAsync(item);
+            }
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { }
+        finally
+        {
+            broker.DisconnectGrpc(request.ConsumerId, connection);
+            logger.LogInformation("broker_unsubscribe consumerId={ConsumerId} sessionId={SessionId}",
+                request.ConsumerId, connection.SessionId);
+        }
+    }
+
+    public override Task<DeliveryAckReply> AcknowledgeDelivery(DeliveryAckRequest request, ServerCallContext context)
+    {
+        if (request.SchemaVersion != ContractVersion)
+            throw Error(StatusCode.FailedPrecondition, "Unsupported schema version.");
+        if (!Guid.TryParse(request.RequestId, out _)
+            || !Guid.TryParse(request.MessageId, out Guid messageId)
+            || !Guid.TryParse(request.CorrelationId, out Guid correlationId)
+            || !Guid.TryParse(request.SessionId, out _)
+            || string.IsNullOrWhiteSpace(request.ConsumerId))
+            throw Error(StatusCode.InvalidArgument, "Request IDs, consumer_id and session_id are required.");
+        if (!request.Accepted && string.IsNullOrWhiteSpace(request.Reason))
+            throw Error(StatusCode.InvalidArgument, "A rejected delivery requires a reason.");
+
+        context.CancellationToken.ThrowIfCancellationRequested();
+        Message response = new()
+        {
+            Type = request.Accepted ? MessageType.Ack : MessageType.Nack,
+            SenderId = request.ConsumerId,
+            RelatedMessageId = messageId,
+            CorrelationId = correlationId,
+            Reason = request.Reason
+        };
+        DeliveryAckOutcome outcome = broker.CompleteGrpcDelivery(response, request.SessionId);
+        if (outcome == DeliveryAckOutcome.InvalidSession)
+            throw Error(StatusCode.FailedPrecondition, "Consumer session is no longer active.");
+        if (outcome == DeliveryAckOutcome.InvalidCorrelation)
+            throw Error(StatusCode.InvalidArgument, "correlation_id does not match the delivery.");
+        if (outcome == DeliveryAckOutcome.NotFound)
+            throw Error(StatusCode.NotFound, "Delivery was not found for this consumer.");
+        if (outcome == DeliveryAckOutcome.NotWaiting)
+            throw Error(StatusCode.FailedPrecondition, "Delivery is not waiting for acknowledgement.");
+
+        bool duplicate = outcome == DeliveryAckOutcome.AlreadyAcknowledged;
+        logger.LogInformation("broker_delivery_ack consumerId={ConsumerId} messageId={MessageId} result={Result}",
+            request.ConsumerId, request.MessageId, duplicate ? "duplicate" : request.Accepted ? "ack" : "nack");
+        return Task.FromResult(new DeliveryAckReply
+        {
+            Duplicate = duplicate,
+            SchemaVersion = ContractVersion
+        });
+    }
+
     private static Message Validate(PublishRequest request)
     {
         if (request.SchemaVersion != ContractVersion || request.MessageType != "Publish")
