@@ -38,7 +38,7 @@ public sealed class ConsumerDeliveryIntegrationTests
         Process? consumer = StartConsumer(broker, "consumer-restart", consumerState, "drop-ack-once");
         try
         {
-            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-restart"));
+            await WaitForSubscriptionAsync(consumer);
             PublishRequest publication = await broker.PublishAsync();
             await WaitUntilAsync(() => File.Exists(consumerState)
                 && ReadOrders(consumerState).ContainsKey(Guid.Parse(publication.MessageId)));
@@ -46,6 +46,7 @@ public sealed class ConsumerDeliveryIntegrationTests
             consumer = null;
 
             consumer = StartConsumer(broker, "consumer-restart", consumerState);
+            await WaitForSubscriptionAsync(consumer);
             await broker.WaitForAsync(state => state.Acknowledgements.Any(x =>
                 x.MessageId == Guid.Parse(publication.MessageId) && x.ConsumerId == "consumer-restart"));
             Assert.Single(ReadOrders(consumerState));
@@ -67,8 +68,8 @@ public sealed class ConsumerDeliveryIntegrationTests
         try
         {
             second = StartConsumer(broker, "consumer-b", secondState);
-            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-a")
-                && state.Subscriptions.Any(x => x.ConsumerId == "consumer-b"));
+            await WaitForSubscriptionAsync(first);
+            await WaitForSubscriptionAsync(second);
             PublishRequest publication = await broker.PublishAsync();
             Guid messageId = Guid.Parse(publication.MessageId);
             await broker.WaitForAsync(state => state.Acknowledgements.Count(x => x.MessageId == messageId) == 2);
@@ -94,7 +95,7 @@ public sealed class ConsumerDeliveryIntegrationTests
         Process? second = null;
         try
         {
-            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-same"));
+            await WaitForSubscriptionAsync(first);
             second = StartConsumer(broker, "consumer-same", stateFile);
             using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
             await second.WaitForExitAsync(timeout.Token);
@@ -116,7 +117,7 @@ public sealed class ConsumerDeliveryIntegrationTests
         Process? second = null;
         try
         {
-            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-duplicate"));
+            await WaitForSubscriptionAsync(first);
             second = StartConsumer(broker, "consumer-duplicate", NewStateFile());
             using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
             await second.WaitForExitAsync(timeout.Token);
@@ -141,7 +142,7 @@ public sealed class ConsumerDeliveryIntegrationTests
         Process consumer = StartConsumer(broker, "consumer-fail", consumerState, "fail");
         try
         {
-            await broker.WaitForAsync(state => state.Subscriptions.Any(x => x.ConsumerId == "consumer-fail"));
+            await WaitForSubscriptionAsync(consumer);
             PublishRequest publication = await broker.PublishAsync();
             await broker.WaitForAsync(state => state.Deliveries.Any(x =>
                 x.Message.MessageId == Guid.Parse(publication.MessageId)
@@ -177,6 +178,27 @@ public sealed class ConsumerDeliveryIntegrationTests
         if (!process.HasExited) process.Kill(entireProcessTree: true);
         await process.WaitForExitAsync();
         process.Dispose();
+    }
+
+    private static async Task WaitForSubscriptionAsync(Process consumer)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        List<string> output = [];
+        try
+        {
+            while (await consumer.StandardOutput.ReadLineAsync(timeout.Token) is { } line)
+            {
+                output.Add(line);
+                if (line.StartsWith("SUBSCRIBED: ", StringComparison.Ordinal)) return;
+            }
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Consumer did not confirm its subscription. Output: {string.Join(" | ", output)}");
+        }
+
+        string error = await consumer.StandardError.ReadToEndAsync();
+        throw new IOException($"Consumer exited before confirming its subscription. Output: {string.Join(" | ", output)} Error: {error}");
     }
 
     private static async Task WaitUntilAsync(Func<bool> predicate)
