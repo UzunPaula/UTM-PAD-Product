@@ -13,7 +13,7 @@
     <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="All" />
   </ItemGroup>
   <ItemGroup>
-    <Protobuf Include="..\DistributedApp.Broker\Protos\broker_v1.proto"
-              Link="Protos\broker_v1.proto" GrpcServices="Client" />
+    <Protobuf Include="..\DistributedApp.Broker\Protos\broker.proto"
+              Link="Protos\broker.proto" GrpcServices="Client" />
   </ItemGroup>
 </Project>

@@ -1,8 +1,9 @@
 # Message contract 1.0
 
-This document describes the TCP contract used by Broker and Consumer and by
-the Producer status request. Lab 2 publication uses the separate gRPC contract
-[`broker_v1.proto`](../../DistributedApp/DistributedApp.Broker/Protos/broker_v1.proto).
+This document describes the legacy TCP contract used by Broker and Consumer and by
+the Producer status request. Lab 2 publication and the new Consumer subscription,
+delivery and acknowledgement methods use the separate gRPC contract
+[`broker.proto`](../../DistributedApp/DistributedApp.Broker/Protos/broker.proto).
 Each TCP frame contains one UTF-8 JSON object followed by a line-feed character.
 
 ## Envelope

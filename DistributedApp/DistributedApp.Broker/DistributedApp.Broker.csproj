@@ -4,17 +4,12 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Program.cs" />
-    <Compile Include="BrokerServer.cs" />
-    <Compile Include="BrokerGrpcService.cs" />
-    <Compile Include="BrokerTcpHostedService.cs" />
     <ProjectReference Include="..\DistributedApp.Contracts\DistributedApp.Contracts.csproj" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
     <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="all" />
-    <Protobuf Include="Protos\broker_v1.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\broker.proto" GrpcServices="Both" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

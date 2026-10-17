@@ -12,7 +12,7 @@ string stateFile = BrokerServer.ResolveStatePath(
     Environment.GetEnvironmentVariable("BROKER_STATE_FILE"), AppContext.BaseDirectory);
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
-// gRPC folosește HTTP/2; listenerul TCP vechi rămâne separat pentru Consumer.
+// gRPC folosește HTTP/2; listenerul TCP rămâne pentru clienții existenți.
 builder.WebHost.ConfigureKestrel(options =>
     options.ListenLocalhost(grpcPort, listen => listen.Protocols = HttpProtocols.Http2));
 builder.Services.AddGrpc();

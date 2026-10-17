@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Channels;
 using DistributedApp.Contracts;
 
 namespace DistributedApp.Broker;
@@ -12,9 +13,9 @@ public sealed class BrokerServer
     private readonly object _sync = new();
     private readonly TcpListener _listener;
     private readonly string _stateFile;
-    private readonly Dictionary<string, ConsumerConnection> _onlineConsumers = [];
+    private readonly Dictionary<string, IConsumerConnection> _onlineConsumers = [];
     private BrokerState _state;
-    private bool _running;
+    private volatile bool _running;
     private Thread? _deliveryThread;
 
     public BrokerServer(int port, string? stateFile = null)
@@ -97,7 +98,7 @@ public sealed class BrokerServer
                 {
                     case MessageType.Publish:
                         PublishIdempotent(message);
-                        await connection.SendAsync(Reply(message, MessageType.Ack), token);
+                        connection.Send(Reply(message, MessageType.Ack));
                         break;
 
                     case MessageType.Subscribe:
@@ -123,7 +124,7 @@ public sealed class BrokerServer
                         break;
 
                     case MessageType.StatusRequest:
-                        await connection.SendAsync(StatusReply(message), token);
+                        connection.Send(StatusReply(message));
                         break;
 
                 }
@@ -139,7 +140,7 @@ public sealed class BrokerServer
             {
                 lock (_sync)
                 {
-                    if (_onlineConsumers.TryGetValue(registeredConsumer, out ConsumerConnection? current)
+                    if (_onlineConsumers.TryGetValue(registeredConsumer, out IConsumerConnection? current)
                         && ReferenceEquals(current, connection))
                         _onlineConsumers.Remove(registeredConsumer);
                 }
@@ -182,7 +183,22 @@ public sealed class BrokerServer
             return _state.PublishedMessages.Any(x => x.MessageId == messageId);
     }
 
-    private string? Subscribe(Message message, ConsumerConnection connection)
+    // Folosește aceeași evidență a abonamentelor pentru TCP și stream-ul gRPC.
+    internal bool SubscribeGrpc(Message message, GrpcConsumerConnection connection)
+        => Subscribe(message, connection) is not null;
+
+    internal void DisconnectGrpc(string consumerId, GrpcConsumerConnection connection)
+    {
+        lock (_sync)
+        {
+            if (_onlineConsumers.TryGetValue(consumerId, out IConsumerConnection? current)
+                && ReferenceEquals(current, connection))
+                _onlineConsumers.Remove(consumerId);
+        }
+        connection.Dispose();
+    }
+
+    private string? Subscribe(Message message, IConsumerConnection connection)
     {
         if (string.IsNullOrWhiteSpace(message.SenderId) || string.IsNullOrWhiteSpace(message.Topic)
             || message.MessageId == Guid.Empty || message.CorrelationId == Guid.Empty)
@@ -196,7 +212,7 @@ public sealed class BrokerServer
         lock (_sync)
         {
             // Verificarea și înregistrarea sunt atomice: a doua conexiune nu o înlocuiește pe prima.
-            if (_onlineConsumers.TryGetValue(consumerId, out ConsumerConnection? active))
+            if (_onlineConsumers.TryGetValue(consumerId, out IConsumerConnection? active))
             {
                 connection.Send(Reply(message, MessageType.Nack, "ConsumerId is already connected."));
                 Console.WriteLine($"SUBSCRIBE REJECTED: {consumerId} is already active at {active.RemoteEndpoint}");
@@ -261,7 +277,7 @@ public sealed class BrokerServer
 
         while (_running)
         {
-            List<(Delivery Delivery, ConsumerConnection Connection)> toSend = [];
+            List<(Delivery Delivery, IConsumerConnection Connection)> toSend = [];
 
             lock (_sync)
             {
@@ -274,7 +290,7 @@ public sealed class BrokerServer
                 foreach (Delivery delivery in _state.Deliveries.Where(x =>
                              x.Status == DeliveryStatus.Pending && x.NextAttemptUtc <= now).ToList())
                 {
-                    if (_onlineConsumers.TryGetValue(delivery.ConsumerId, out ConsumerConnection? consumer))
+                    if (_onlineConsumers.TryGetValue(delivery.ConsumerId, out IConsumerConnection? consumer))
                     {
                         delivery.Status = DeliveryStatus.WaitingAck;
                         delivery.SentAtUtc = now;
@@ -289,7 +305,7 @@ public sealed class BrokerServer
                 if (toSend.Count > 0) SaveState();
             }
 
-            foreach ((Delivery delivery, ConsumerConnection consumer) in toSend)
+            foreach ((Delivery delivery, IConsumerConnection consumer) in toSend)
             {
                 try
                 {
@@ -307,7 +323,7 @@ public sealed class BrokerServer
                 }
                 catch (IOException)
                 {
-                    lock (_sync) Fail(delivery, "TCP connection lost.");
+                    lock (_sync) Fail(delivery, "Consumer connection lost.");
                 }
             }
 
@@ -315,17 +331,29 @@ public sealed class BrokerServer
         }
     }
 
-    private void CompleteDelivery(Message response, bool accepted)
+    internal DeliveryAckOutcome CompleteGrpcDelivery(Message response, string sessionId)
+        => CompleteDelivery(response, response.Type == MessageType.Ack, sessionId);
+
+    private DeliveryAckOutcome CompleteDelivery(Message response, bool accepted, string? sessionId = null)
     {
-        if (response.RelatedMessageId is null) return;
+        if (response.RelatedMessageId is null) return DeliveryAckOutcome.NotFound;
 
         lock (_sync)
         {
+            if (sessionId is not null && (!_onlineConsumers.TryGetValue(response.SenderId, out IConsumerConnection? active)
+                || active is not GrpcConsumerConnection grpc || grpc.SessionId != sessionId))
+                return DeliveryAckOutcome.InvalidSession;
+
             Delivery? delivery = _state.Deliveries.FirstOrDefault(x =>
                 x.Message.MessageId == response.RelatedMessageId
-                && x.ConsumerId == response.SenderId
-                && x.Status == DeliveryStatus.WaitingAck);
-            if (delivery is null) return;
+                && x.ConsumerId == response.SenderId);
+            if (delivery is null) return DeliveryAckOutcome.NotFound;
+            if (sessionId is not null && delivery.Message.CorrelationId != response.CorrelationId)
+                return DeliveryAckOutcome.InvalidCorrelation;
+            if (delivery.Status == DeliveryStatus.Acknowledged && accepted)
+                return DeliveryAckOutcome.AlreadyAcknowledged;
+            if (delivery.Status != DeliveryStatus.WaitingAck)
+                return DeliveryAckOutcome.NotWaiting;
 
             if (accepted)
             {
@@ -344,6 +372,7 @@ public sealed class BrokerServer
                 Fail(delivery, response.Reason ?? "Consumer returned NACK.");
             }
             SaveState();
+            return DeliveryAckOutcome.Recorded;
         }
     }
 
@@ -432,7 +461,39 @@ public sealed class BrokerServer
     }
 }
 
-internal sealed class ConsumerConnection : IDisposable
+internal interface IConsumerConnection
+{
+    string RemoteEndpoint { get; }
+    void Send(Message message);
+}
+
+internal sealed class GrpcConsumerConnection(string remoteEndpoint) : IConsumerConnection, IDisposable
+{
+    private readonly Channel<Message> _messages = Channel.CreateBounded<Message>(new BoundedChannelOptions(64)
+    {
+        SingleReader = true,
+        SingleWriter = false
+    });
+
+    public string SessionId { get; } = Guid.NewGuid().ToString();
+    public string RemoteEndpoint { get; } = remoteEndpoint;
+    public string? RejectionReason { get; private set; }
+    public ChannelReader<Message> Messages => _messages.Reader;
+
+    public void Send(Message message)
+    {
+        if (message.Type == MessageType.Nack)
+            RejectionReason = message.Reason;
+        if (!_messages.Writer.TryWrite(message))
+            throw new IOException("Consumer gRPC stream is full or closed.");
+    }
+
+    public void Dispose() => _messages.Writer.TryComplete();
+}
+
+internal enum DeliveryAckOutcome { Recorded, AlreadyAcknowledged, NotFound, NotWaiting, InvalidSession, InvalidCorrelation }
+
+internal sealed class ConsumerConnection : IConsumerConnection, IDisposable
 {
     private readonly TcpClient _client;
     private readonly StreamWriter _writer;
@@ -452,11 +513,6 @@ internal sealed class ConsumerConnection : IDisposable
     public void Send(Message message)
     {
         lock (_sendLock) _writer.WriteLine(MessageJson.Serialize(message));
-    }
-    public Task SendAsync(Message message, CancellationToken token)
-    {
-        lock (_sendLock) _writer.WriteLine(MessageJson.Serialize(message));
-        return Task.CompletedTask;
     }
     public void Dispose()
     {
