@@ -24,7 +24,7 @@ public sealed class BrokerConsumerGrpcTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         PublishRequest publication = Publication();
         Assert.True((await client.PublishAsync(publication)).Accepted);
@@ -71,7 +71,7 @@ public sealed class BrokerConsumerGrpcTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), NewStateFile());
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
         using AsyncServerStreamingCall<ConsumerEvent> first = client.SubscribeConsumer(
@@ -94,7 +94,7 @@ public sealed class BrokerConsumerGrpcTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         PublishRequest publication = Publication();
         await client.PublishAsync(publication);
@@ -142,7 +142,7 @@ public sealed class BrokerConsumerGrpcTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         PublishRequest publication = Publication();
         publication.Payload = MessageJson.Serialize(new OrderPayload("ORDER-ACK-LOSS", "Laptop", "Test"));
@@ -224,19 +224,21 @@ public sealed class BrokerConsumerGrpcTests
         return new BrokerProcess(Process.Start(start)!);
     }
 
-    private static async Task WaitUntilHealthy(BrokerRpcV1.BrokerRpcV1Client client)
+    private static async Task WaitUntilReady(BrokerRpcV1.BrokerRpcV1Client client)
     {
         for (int attempt = 0; attempt < 50; attempt++)
         {
             try
             {
-                if ((await client.CheckHealthAsync(new HealthRequest(),
-                        deadline: DateTime.UtcNow.AddSeconds(1))).Status == "Healthy") return;
+                await client.GetPublishStatusAsync(
+                    new PublishStatusRequest { MessageId = Guid.NewGuid().ToString() },
+                    deadline: DateTime.UtcNow.AddSeconds(1));
+                return;
             }
             catch (RpcException) { }
             await Task.Delay(100);
         }
-        throw new TimeoutException("Broker gRPC did not become healthy.");
+        throw new TimeoutException("Broker gRPC did not become ready.");
     }
 
     private static int FreePort()

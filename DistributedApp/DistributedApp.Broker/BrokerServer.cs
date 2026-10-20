@@ -219,6 +219,9 @@ public sealed class BrokerServer
                 return null;
             }
 
+            // Un Consumer activ aparține unui singur topic. La schimbarea Producerului,
+            // abonamentul vechi nu trebuie să mai genereze livrări pentru acel Consumer.
+            _state.Subscriptions.RemoveAll(x => x.ConsumerId == consumerId && x.Topic != message.Topic);
             if (!_state.Subscriptions.Any(x => x.ConsumerId == consumerId && x.Topic == message.Topic))
                 _state.Subscriptions.Add(new Subscription { ConsumerId = consumerId, Topic = message.Topic });
 
@@ -241,6 +244,7 @@ public sealed class BrokerServer
             SaveState();
 
             // ACK-ul precedă orice livrare: DeliveryLoop nu poate lua _sync până la trimiterea lui.
+            connection.Topic = message.Topic;
             _onlineConsumers[consumerId] = connection;
             try
             {
@@ -290,7 +294,8 @@ public sealed class BrokerServer
                 foreach (Delivery delivery in _state.Deliveries.Where(x =>
                              x.Status == DeliveryStatus.Pending && x.NextAttemptUtc <= now).ToList())
                 {
-                    if (_onlineConsumers.TryGetValue(delivery.ConsumerId, out IConsumerConnection? consumer))
+                    if (_onlineConsumers.TryGetValue(delivery.ConsumerId, out IConsumerConnection? consumer)
+                        && consumer.Topic == delivery.Message.Topic)
                     {
                         delivery.Status = DeliveryStatus.WaitingAck;
                         delivery.SentAtUtc = now;
@@ -298,7 +303,7 @@ public sealed class BrokerServer
                     }
                     else
                     {
-                        Fail(delivery, "Consumer offline.");
+                        Fail(delivery, "Consumer is not connected to this topic.");
                     }
                 }
 
@@ -401,9 +406,9 @@ public sealed class BrokerServer
         lock (_sync)
         {
             List<Delivery> topicDeliveries = _state.Deliveries.Where(x => x.Message.Topic == request.Topic).ToList();
-            HashSet<string> topicConsumers = _state.Subscriptions
-                .Where(x => x.Topic == request.Topic && _onlineConsumers.ContainsKey(x.ConsumerId))
-                .Select(x => x.ConsumerId)
+            HashSet<string> topicConsumers = _onlineConsumers
+                .Where(x => x.Value.Topic == request.Topic)
+                .Select(x => x.Key)
                 .ToHashSet();
             status = new BrokerStatus
             {
@@ -464,6 +469,7 @@ public sealed class BrokerServer
 internal interface IConsumerConnection
 {
     string RemoteEndpoint { get; }
+    string Topic { get; set; }
     void Send(Message message);
 }
 
@@ -477,6 +483,7 @@ internal sealed class GrpcConsumerConnection(string remoteEndpoint) : IConsumerC
 
     public string SessionId { get; } = Guid.NewGuid().ToString();
     public string RemoteEndpoint { get; } = remoteEndpoint;
+    public string Topic { get; set; } = string.Empty;
     public string? RejectionReason { get; private set; }
     public ChannelReader<Message> Messages => _messages.Reader;
 
@@ -509,6 +516,7 @@ internal sealed class ConsumerConnection : IConsumerConnection, IDisposable
     }
 
     public string RemoteEndpoint { get; }
+    public string Topic { get; set; } = string.Empty;
     public StreamReader Reader { get; }
     public void Send(Message message)
     {

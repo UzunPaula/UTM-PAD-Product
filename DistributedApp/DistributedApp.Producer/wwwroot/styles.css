@@ -187,6 +187,18 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .08em; text-transfor
 .table-state.error { color: var(--danger); }
 .message-id { max-width: 190px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .reason-cell { min-width: 210px; color: var(--muted); white-space: normal; }
+.table-action {
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--accent-bright);
+    background: transparent;
+    white-space: nowrap;
+    font-weight: 700;
+}
+.table-action:hover { border-color: var(--accent-bright); }
+.table-action:disabled { cursor: wait; opacity: .55; }
 
 
 @media (max-width: 850px) {

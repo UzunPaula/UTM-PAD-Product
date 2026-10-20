@@ -115,12 +115,66 @@ public sealed class BrokerSubscribeTests
         Assert.False(string.IsNullOrWhiteSpace(rejection.Reason));
     }
 
-    private static Message Subscribe(string consumerId) => new()
+    [Fact]
+    public async Task ConsumerIsCountedOnlyOnItsActiveTopic()
+    {
+        await using BrokerHost broker = new(NewStateFile());
+
+        using (TcpClient oldClient = await broker.ConnectAsync())
+        using (StreamReader oldReader = new(oldClient.GetStream(), Encoding.UTF8, leaveOpen: true))
+        await using (StreamWriter oldWriter = new(oldClient.GetStream(), new UTF8Encoding(false), leaveOpen: true)
+        {
+            AutoFlush = true
+        })
+        {
+            await oldWriter.WriteLineAsync(MessageJson.Serialize(Subscribe("consumer-3", "producer-2")));
+            Assert.Equal(MessageType.Ack, (await ReadAsync(oldReader)).Type);
+        }
+
+        await Task.Delay(100);
+
+        using TcpClient activeClient = await broker.ConnectAsync();
+        using StreamReader activeReader = new(activeClient.GetStream(), Encoding.UTF8, leaveOpen: true);
+        await using StreamWriter activeWriter = new(activeClient.GetStream(), new UTF8Encoding(false), leaveOpen: true)
+        {
+            AutoFlush = true
+        };
+        await activeWriter.WriteLineAsync(MessageJson.Serialize(Subscribe("consumer-3", "producer-1")));
+        Assert.Equal(MessageType.Ack, (await ReadAsync(activeReader)).Type);
+
+        BrokerStatus currentTopic = await ReadStatusAsync(activeWriter, activeReader, "producer-1");
+        BrokerStatus oldTopic = await ReadStatusAsync(activeWriter, activeReader, "producer-2");
+
+        Assert.Equal(1, currentTopic.ConsumerCount);
+        Assert.Equal(0, oldTopic.ConsumerCount);
+
+        BrokerState savedState = MessageJson.Deserialize<BrokerState>(File.ReadAllText(broker.StateFile));
+        Subscription savedSubscription = Assert.Single(savedState.Subscriptions,
+            x => x.ConsumerId == "consumer-3");
+        Assert.Equal("producer-1", savedSubscription.Topic);
+    }
+
+    private static Message Subscribe(string consumerId, string topic = "producer-1") => new()
     {
         Type = MessageType.Subscribe,
         SenderId = consumerId,
-        Topic = "producer-1"
+        Topic = topic
     };
+
+    private static async Task<BrokerStatus> ReadStatusAsync(
+        StreamWriter writer, StreamReader reader, string topic)
+    {
+        Message request = new()
+        {
+            Type = MessageType.StatusRequest,
+            SenderId = "producer-test",
+            Topic = topic
+        };
+        await writer.WriteLineAsync(MessageJson.Serialize(request));
+        Message reply = await ReadAsync(reader);
+        Assert.Equal(MessageType.StatusResponse, reply.Type);
+        return MessageJson.Deserialize<BrokerStatus>(reply.Payload);
+    }
 
     private static async Task<Message> ReadAsync(StreamReader reader)
     {

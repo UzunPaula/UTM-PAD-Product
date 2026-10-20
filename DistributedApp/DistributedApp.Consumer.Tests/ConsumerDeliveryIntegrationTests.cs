@@ -249,14 +249,15 @@ public sealed class ConsumerDeliveryIntegrationTests
                 {
                     try
                     {
-                        if ((await client.CheckHealthAsync(new HealthRequest(),
-                                deadline: DateTime.UtcNow.AddSeconds(1))).Status == "Healthy")
-                            return broker;
+                        await client.GetPublishStatusAsync(
+                            new PublishStatusRequest { MessageId = Guid.NewGuid().ToString() },
+                            deadline: DateTime.UtcNow.AddSeconds(1));
+                        return broker;
                     }
                     catch (RpcException) { }
                     await Task.Delay(100);
                 }
-                throw new TimeoutException("Broker gRPC did not become healthy.");
+                throw new TimeoutException("Broker gRPC did not become ready.");
             }
             catch
             {

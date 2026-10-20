@@ -43,6 +43,26 @@ app.MapPost("/api/orders", async (
     }
 });
 
+app.MapPost("/api/orders/retry", async (
+    RetryOrderRequest request, Producer producer, CancellationToken token) =>
+{
+    try
+    {
+        PublishResult result = await producer.PublishOrderAsync(
+            request.Order, token, messageId: request.MessageId, correlationId: request.CorrelationId);
+        return result.Outcome switch
+        {
+            PublishOutcome.Accepted or PublishOutcome.Duplicate => Results.Ok(result),
+            PublishOutcome.Unknown => Results.Json(result, statusCode: StatusCodes.Status504GatewayTimeout),
+            _ => Results.BadRequest(result)
+        };
+    }
+    catch
+    {
+        return Results.Json(new { accepted = false, reason = "Broker offline." }, statusCode: 503);
+    }
+});
+
 app.MapGet("/api/status", async (TcpClientService tcp, CancellationToken token) =>
 {
     try
@@ -86,3 +106,5 @@ app.MapGet("/api/status", async (TcpClientService tcp, CancellationToken token) 
 
 app.MapFallbackToFile("index.html");
 app.Run();
+
+public sealed record RetryOrderRequest(OrderPayload Order, Guid MessageId, Guid CorrelationId);

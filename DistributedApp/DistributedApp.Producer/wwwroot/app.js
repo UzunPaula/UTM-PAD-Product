@@ -1,6 +1,7 @@
 const api = {
     status: "/api/status",
-    orders: "/api/orders"
+    orders: "/api/orders",
+    retry: "/api/orders/retry"
 };
 
 const elements = {
@@ -189,7 +190,7 @@ function renderHistory() {
     if (history.length === 0) {
         const row = document.createElement("tr");
         row.className = "empty-row";
-        row.innerHTML = '<td colspan="5">Nu au fost trimise comenzi în această sesiune.</td>';
+        row.innerHTML = '<td colspan="6">Nu au fost trimise comenzi în această sesiune.</td>';
         elements.historyBody.append(row);
         return;
     }
@@ -221,8 +222,51 @@ function renderHistory() {
         messageCell.title = item.messageId || item.detail;
         messageCell.textContent = item.messageId || item.detail;
         row.append(messageCell);
+
+        const actionCell = document.createElement("td");
+        if (item.messageId && item.correlationId) {
+            const retryButton = document.createElement("button");
+            retryButton.type = "button";
+            retryButton.className = "table-action";
+            retryButton.textContent = "Retrimite mesajul";
+            retryButton.addEventListener("click", () => retryOrder(item, retryButton));
+            actionCell.append(retryButton);
+        }
+        row.append(actionCell);
         elements.historyBody.append(row);
     });
+}
+
+async function retryOrder(item, button) {
+    button.disabled = true;
+    try {
+        const response = await fetch(api.retry, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+                order: {
+                    orderId: item.orderId,
+                    product: item.product,
+                    description: item.description
+                },
+                messageId: item.messageId,
+                correlationId: item.correlationId
+            })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (result.outcome === "Duplicate") {
+            showResult(false, "Duplicare mesaj", `messageId: ${item.messageId}`);
+            return;
+        }
+        if (!response.ok) throw new Error(result.reason || `Răspuns HTTP ${response.status}.`);
+        showResult(true, "Mesajul a fost retrimis.", `messageId: ${item.messageId}`);
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : "Backendul nu este disponibil.";
+        showResult(false, "Retrimiterea nu a putut fi confirmată.", detail);
+    } finally {
+        button.disabled = false;
+        await refreshStatus();
+    }
 }
 
 async function submitOrder(event) {
@@ -258,7 +302,8 @@ async function submitOrder(event) {
         history.unshift({
             ...order,
             state: "published",
-            messageId: result.messageId || "Acceptat"
+            messageId: result.messageId || "Acceptat",
+            correlationId: result.correlationId
         });
         elements.form.reset();
         elements.orderId.value = createOrderId();

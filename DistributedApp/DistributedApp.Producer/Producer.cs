@@ -6,7 +6,8 @@ namespace DistributedApp.Producer;
 public sealed class Producer(GrpcClientService grpc, ProducerSettings settings)
 {
     public async Task<PublishResult> PublishOrderAsync(
-        OrderPayload order, CancellationToken token, bool simulateLostResponse = false)
+        OrderPayload order, CancellationToken token, bool simulateLostResponse = false,
+        Guid? messageId = null, Guid? correlationId = null)
     {
         if (string.IsNullOrWhiteSpace(order.OrderId)
             || string.IsNullOrWhiteSpace(order.Product)
@@ -16,6 +17,8 @@ public sealed class Producer(GrpcClientService grpc, ProducerSettings settings)
 
         Message message = new()
         {
+            MessageId = messageId ?? Guid.NewGuid(),
+            CorrelationId = correlationId ?? Guid.NewGuid(),
             Type = MessageType.Publish,
             SenderId = settings.ProducerId,
             Topic = settings.ProducerId,

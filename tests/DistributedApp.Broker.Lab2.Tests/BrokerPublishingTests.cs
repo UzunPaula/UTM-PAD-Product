@@ -22,7 +22,7 @@ public sealed class BrokerPublishingTests
         using BrokerProcess broker = StartBroker(grpcPort, tcpPort, stateFile);
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         PublishRequest request = new()
         {
@@ -59,7 +59,7 @@ public sealed class BrokerPublishingTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), Path.Combine(Path.GetTempPath(), "broker-grpc-test-" + Guid.NewGuid().ToString("N"), "state.json"));
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
         PublishRequest request = new()
         {
             RequestId = Guid.NewGuid().ToString(), MessageId = Guid.NewGuid().ToString(),
@@ -81,7 +81,7 @@ public sealed class BrokerPublishingTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         PublishRequest first = new()
         {
@@ -109,7 +109,7 @@ public sealed class BrokerPublishingTests
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
-        await WaitUntilHealthy(client);
+        await WaitUntilReady(client);
 
         PublishRequest request = new()
         {
@@ -266,19 +266,21 @@ public sealed class BrokerPublishingTests
         return new BrokerProcess(Process.Start(start)!);
     }
 
-    private static async Task WaitUntilHealthy(BrokerRpcV1.BrokerRpcV1Client client)
+    private static async Task WaitUntilReady(BrokerRpcV1.BrokerRpcV1Client client)
     {
         for (int attempt = 0; attempt < 50; attempt++)
         {
             try
             {
-                HealthReply health = await client.CheckHealthAsync(new HealthRequest(), deadline: DateTime.UtcNow.AddSeconds(1));
-                if (health.Status == "Healthy") return;
+                await client.GetPublishStatusAsync(
+                    new PublishStatusRequest { MessageId = Guid.NewGuid().ToString() },
+                    deadline: DateTime.UtcNow.AddSeconds(1));
+                return;
             }
             catch (RpcException) { }
             await Task.Delay(100);
         }
-        throw new TimeoutException("Broker gRPC did not become healthy.");
+        throw new TimeoutException("Broker gRPC did not become ready.");
     }
 
     private static int FreePort()

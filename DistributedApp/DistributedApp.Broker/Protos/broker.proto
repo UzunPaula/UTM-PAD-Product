@@ -5,11 +5,15 @@ option csharp_namespace = "DistributedApp.Broker.Grpc.V1";
 
 // Contract v1: numerele câmpurilor existente nu se reutilizează la evoluția contractului.
 service BrokerRpcV1 {
+  // Producerul trimite un mesaj; Brokerul îl salvează o singură dată după message_id.
   rpc Publish (PublishRequest) returns (PublishReply);
+
+  // Producerul verifică dacă mesajul a fost salvat când răspunsul Publish s-a pierdut.
   rpc GetPublishStatus (PublishStatusRequest) returns (PublishStatusReply);
-  rpc CheckHealth (HealthRequest) returns (HealthReply);
+
   // Primul eveniment confirmă abonarea; următoarele conțin livrările.
   rpc SubscribeConsumer (SubscribeConsumerRequest) returns (stream ConsumerEvent);
+
   // Consumerul confirmă sau respinge o livrare folosind sesiunea primită la abonare.
   rpc AcknowledgeDelivery (DeliveryAckRequest) returns (DeliveryAckReply);
 }
@@ -42,14 +46,6 @@ message PublishStatusReply {
   bool found = 2;
   string status = 3;
   string schema_version = 4;
-}
-
-message HealthRequest {}
-message HealthReply {
-  string status = 1;
-  string component = 2;
-  string schema_version = 3;
-  string observed_at_utc = 4;
 }
 
 message SubscribeConsumerRequest {

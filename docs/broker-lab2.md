@@ -2,7 +2,7 @@
 
 ## Contract și delimitarea responsabilităților
 
-Contractul gRPC este [`broker.proto`](../DistributedApp/DistributedApp.Broker/Protos/broker.proto), pachetul `distributedapp.broker.v1`, `schema_version = "1.0"`. Producerul folosește `Publish` și `GetPublishStatus`. Brokerul oferă acum și `SubscribeConsumer` (stream de confirmare și livrări) și `AcknowledgeDelivery` (ACK/NACK) pentru clientul Consumer gRPC. Clientul Consumer existent încă folosește TCP până când este adaptat pe branchul său; listenerul TCP rămâne compatibil. Orice schimbare incompatibilă cere o versiune nouă a serviciului, nu reutilizarea numerelor de câmp.
+Contractul gRPC este [`broker.proto`](../DistributedApp/DistributedApp.Broker/Protos/broker.proto), pachetul `distributedapp.broker.v1`, `schema_version = "1.0"`. Producerul folosește `Publish` și `GetPublishStatus`. Consumerul folosește `SubscribeConsumer` pentru stream-ul de livrări și `AcknowledgeDelivery` pentru ACK/NACK. Listenerul TCP rămâne numai pentru monitorizarea interfeței și compatibilitatea cu Lab 1. Orice schimbare incompatibilă cere o versiune nouă a serviciului, nu reutilizarea numerelor de câmp.
 
 ```text
 Producer --gRPC Publish(request_id, message_id, correlation_id)--> Broker
@@ -25,7 +25,7 @@ Acest mecanism garantează deduplicarea **acceptării în Broker** pentru un `me
 
 ## Configurare și verificare
 
-Implicit: gRPC pe `127.0.0.1:5001` (HTTP/2) pentru Producer și noul Consumer, respectiv TCP pe portul `5000` pentru compatibilitate. Variabile opționale: `BROKER_GRPC_PORT`, `BROKER_TCP_PORT`, `BROKER_STATE_FILE`. Nu există chei secrete în repository. Starea se află implicit în `data/broker-state.json` la rădăcina clonei și este ignorată de Git. Dacă există numai fișierul vechi din `bin`, acesta este copiat o singură dată la prima pornire. Fișierul de stare este creat la prima schimbare salvată; dacă este corupt, Brokerul nu pornește cu o stare goală care ar anula deduplicarea. Endpoint-ul `CheckHealth` este ieftin și nu modifică starea.
+Implicit: gRPC pe `127.0.0.1:5001` (HTTP/2) pentru Producer și Consumer, respectiv TCP pe portul `5000` pentru monitorizarea interfeței. Variabile opționale: `BROKER_GRPC_PORT`, `BROKER_TCP_PORT`, `BROKER_STATE_FILE`. Nu există chei secrete în repository. Starea se află implicit în `data/broker-state.json` la rădăcina clonei și este ignorată de Git. Dacă există numai fișierul vechi din `bin`, acesta este copiat o singură dată la prima pornire. Fișierul de stare este creat la prima schimbare salvată; dacă este corupt, Brokerul nu pornește cu o stare goală care ar anula deduplicarea.
 
 Din rădăcina clonei `PAD`:
 
@@ -46,7 +46,7 @@ Pentru prezentare, corespondența dintre cerință și dovadă este:
 | Retry și idempotency | `NotFoundFallbackRetriesWithTheSameMessageId` și testele de publicare duplicată: același ID este refolosit; nu apare o a doua publicație. |
 | Cancellation | `CancellationBeforePublishDoesNotCreateARecord` și `CancellingAfterSaveDoesNotUndoTheRemoteOperation`: anularea apelului nu înseamnă automat anularea efectului deja salvat. |
 | gRPC Consumer și recuperare | `BrokerConsumerGrpcTests`: abonare confirmată, livrare, ACK/NACK, refuzul conexiunii duplicate și relivrare după ACK pierdut. Testul folosește un client gRPC de test, nu executabilul Valeriei. |
-| Health fără efect secundar | `HealthCheckDoesNotCreateBrokerState`: răspunsul de sănătate nu creează fișierul de stare. |
+| Verificare de status fără efect secundar | `StatusCheckDoesNotCreateBrokerState`: interogarea unui ID inexistent nu modifică starea. |
 
 ## Dovada scenariului critic
 
@@ -63,8 +63,8 @@ Testul `LostReplyIsResolvedByStatusAndRetryDoesNotDuplicate` pornește Brokerul 
 
 Testele Brokerului verifică și fluxul gRPC Consumer: confirmarea abonării înainte de livrare, ACK repetat fără efect dublu, NACK urmat de relivrare, sesiune greșită și abonare duplicată. Nu se folosește un fișier de stare din `data/` la teste; fiecare scenariu are o cale temporară separată. Testele TCP continuă să verifice abonarea clienților existenți.
 
-Testele de integrare suplimentare verifică: clientul Producer real și endpointul său HTTP `/api/orders` cu răspuns gRPC pierdut, recuperat prin `GetPublishStatus` fără o a doua publicație; fallback-ul `NotFound` urmat de retry cu același `message_id`; Broker indisponibil cu rezultat `Unknown` în timp limitat; anularea înainte de publicare; anularea după salvare fără anularea efectului; un câmp Protobuf nou necunoscut cititorului vechi; un `CheckHealth` care nu scrie stare; și ACK pierdut urmat de relivrare. Ramura `NotFound` folosește un serviciu gRPC de test care răspunde întâi `Unavailable`, apoi `NotFound`; celelalte teste pornesc Brokerul real. În scenariul ACK pierdut, clientul gRPC din test folosește `ProcessedMessageStore` real al Consumerului și dovedește că efectul se salvează o singură dată.
+Testele de integrare suplimentare verifică: clientul Producer real și endpointul său HTTP `/api/orders` cu răspuns gRPC pierdut, recuperat prin `GetPublishStatus` fără o a doua publicație; fallback-ul `NotFound` urmat de retry cu același `message_id`; Broker indisponibil cu rezultat `Unknown` în timp limitat; anularea înainte de publicare; anularea după salvare fără anularea efectului; un câmp Protobuf nou necunoscut cititorului vechi; verificarea de status fără modificarea stării; și ACK pierdut urmat de relivrare. Ramura `NotFound` folosește un serviciu gRPC de test care răspunde întâi `Unavailable`, apoi `NotFound`; celelalte teste pornesc Brokerul real. În scenariul ACK pierdut, clientul gRPC din test folosește `ProcessedMessageStore` real al Consumerului și dovedește că efectul se salvează o singură dată.
 
-Clientul executabil al Consumerului încă folosește TCP. Testul gRPC verifică Brokerul și stocarea Consumerului, dar **nu** înlocuiește testul final cu executabilul Consumer după ce partea lui gRPC este implementată pe branchul Consumerului.
+Testele pornesc și executabilul real al Consumerului, verificând abonarea gRPC, procesarea și răspunsul ACK/NACK.
 
 Limite: nu există tranzacție distribuită cu Consumerul; `GetPublishStatus` arată acceptarea în Broker, nu finalizarea livrării; portul gRPC este configurat pentru dezvoltare locală fără TLS. În producție ar trebui adăugate TLS, autentificare și o stocare tranzacțională robustă.

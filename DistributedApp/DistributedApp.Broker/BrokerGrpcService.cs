@@ -72,15 +72,6 @@ public sealed class BrokerGrpcService(BrokerServer broker, ILogger<BrokerGrpcSer
         });
     }
 
-    public override Task<HealthReply> CheckHealth(HealthRequest request, ServerCallContext context) =>
-        Task.FromResult(new HealthReply
-        {
-            Status = "Healthy",
-            Component = "Broker",
-            SchemaVersion = ContractVersion,
-            ObservedAtUtc = DateTimeOffset.UtcNow.ToString("O")
-        });
-
     public override async Task SubscribeConsumer(
         SubscribeConsumerRequest request, IServerStreamWriter<ConsumerEvent> responseStream, ServerCallContext context)
     {

@@ -2,9 +2,9 @@
 
 **Context.** Laboratorul 2 cere un RPC cu contract versionat și tratarea cazului în care răspunsul se pierde după operația la distanță. Sistemul existent livrează către Consumer prin TCP și păstrează starea într-un fișier JSON.
 
-**Decizie.** Brokerul expune un serviciu gRPC v1 pentru `Publish`, `GetPublishStatus` și `CheckHealth`; livrarea TCP existentă rămâne neschimbată. `message_id` este cheia de deduplicare persistentă. Contractul `.proto` este păstrat în directorul Broker și este partajat cu responsabilul Producerului. Un răspuns pierdut se rezolvă prin interogarea statusului și, doar dacă este necesar, retry cu aceeași cheie.
+**Decizie.** Brokerul expune un serviciu gRPC v1 pentru publicare, verificarea rezultatului, abonarea Consumerului și confirmarea livrării. `message_id` este cheia de deduplicare persistentă. Contractul `.proto` este păstrat în directorul Broker. Un răspuns pierdut se rezolvă prin interogarea statusului și, doar dacă este necesar, retry cu aceeași cheie.
 
-**Alternative.** HTTP/JSON ar fi mai ușor de apelat manual, dar gRPC oferă contractul explicit `.proto` și suport nativ pentru deadline/cancellation. Un retry orb fără deduplicare ar putea crea publicații multiple. Mutarea completă a TCP la gRPC ar extinde inutil această etapă și ar modifica partea colegei Consumer.
+**Alternative.** HTTP/JSON ar fi mai ușor de apelat manual, dar gRPC oferă contractul explicit `.proto` și suport nativ pentru deadline/cancellation. Un retry orb fără deduplicare ar putea crea publicații multiple.
 
 **Consecințe.** Brokerul are acum un port gRPC suplimentar și dependențe NuGet. Testele de integrare verifică pierderea răspunsului. Acceptarea este idempotentă, dar nu există promisiune `exactly once` pentru efectele Consumerului.
 

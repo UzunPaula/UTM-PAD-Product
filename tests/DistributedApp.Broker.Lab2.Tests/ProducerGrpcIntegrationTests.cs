@@ -32,7 +32,7 @@ public sealed class ProducerGrpcIntegrationTests
         int grpcPort = FreePort();
         string stateFile = NewStateFile();
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
-        await WaitUntilHealthy(grpcPort);
+        await WaitUntilReady(grpcPort);
 
         ProducerSettings settings = Settings(grpcPort, timeoutMs: 500);
         using GrpcClientService grpc = new(settings);
@@ -67,7 +67,7 @@ public sealed class ProducerGrpcIntegrationTests
         int grpcPort = FreePort();
         string stateFile = NewStateFile();
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
-        await WaitUntilHealthy(grpcPort);
+        await WaitUntilReady(grpcPort);
         using GrpcClientService grpc = new(Settings(grpcPort, timeoutMs: 3000));
         using CancellationTokenSource cancellation = new();
         cancellation.Cancel();
@@ -112,13 +112,13 @@ public sealed class ProducerGrpcIntegrationTests
     }
 
     [Fact]
-    public async Task HealthCheckDoesNotCreateBrokerState()
+    public async Task StatusCheckDoesNotCreateBrokerState()
     {
         int grpcPort = FreePort();
         string stateFile = NewStateFile();
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
 
-        await WaitUntilHealthy(grpcPort);
+        await WaitUntilReady(grpcPort);
 
         Assert.False(File.Exists(stateFile));
     }
@@ -130,7 +130,7 @@ public sealed class ProducerGrpcIntegrationTests
         int producerPort = FreePort();
         string stateFile = NewStateFile();
         using BrokerProcess broker = StartBroker(grpcPort, FreePort(), stateFile);
-        await WaitUntilHealthy(grpcPort);
+        await WaitUntilReady(grpcPort);
         using BrokerProcess producer = StartProducer(producerPort, grpcPort);
         using HttpClient http = new()
         {
@@ -221,7 +221,7 @@ public sealed class ProducerGrpcIntegrationTests
         throw new TimeoutException($"Producer HTTP endpoint did not become ready. {producer.Diagnostics}");
     }
 
-    private static async Task WaitUntilHealthy(int grpcPort)
+    private static async Task WaitUntilReady(int grpcPort)
     {
         using GrpcChannel channel = GrpcChannel.ForAddress($"http://127.0.0.1:{grpcPort}");
         BrokerRpcV1.BrokerRpcV1Client client = new(channel);
@@ -229,13 +229,15 @@ public sealed class ProducerGrpcIntegrationTests
         {
             try
             {
-                if ((await client.CheckHealthAsync(new HealthRequest(),
-                        deadline: DateTime.UtcNow.AddSeconds(1))).Status == "Healthy") return;
+                await client.GetPublishStatusAsync(
+                    new PublishStatusRequest { MessageId = Guid.NewGuid().ToString() },
+                    deadline: DateTime.UtcNow.AddSeconds(1));
+                return;
             }
             catch (RpcException) { }
             await Task.Delay(100);
         }
-        throw new TimeoutException("Broker gRPC did not become healthy.");
+        throw new TimeoutException("Broker gRPC did not become ready.");
     }
 
     private static int FreePort()
